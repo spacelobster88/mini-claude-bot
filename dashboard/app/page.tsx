@@ -88,10 +88,7 @@ export default function Dashboard() {
   const lastPush = data._last_push;
   const isOnline = lastPush ? Date.now() - new Date(lastPush).getTime() < 600000 : false;
 
-  const totalTokens = Object.values(claude.model_usage).reduce(
-    (sum, m) => sum + m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_creation_tokens,
-    0
-  );
+  const totalMessages = claude.total_messages || 0;
 
   return (
     <main className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
@@ -145,26 +142,17 @@ export default function Dashboard() {
           <div className="space-y-2">
             <div className="grid grid-cols-2 gap-2">
               <div className="bg-gray-800 rounded-lg p-3 text-center">
-                <div className="text-xl font-bold text-blue-400">{fmt(totalTokens)}</div>
-                <div className="text-xs text-gray-500">Total Tokens</div>
+                <div className="text-xl font-bold text-blue-400">{fmt(totalMessages)}</div>
+                <div className="text-xs text-gray-500">Messages</div>
               </div>
               <div className="bg-gray-800 rounded-lg p-3 text-center">
                 <div className="text-xl font-bold text-emerald-400">{claude.total_sessions}</div>
                 <div className="text-xs text-gray-500">Sessions</div>
               </div>
             </div>
-            {Object.entries(claude.model_usage).map(([model, u]) => (
-              <div key={model} className="text-xs space-y-1 bg-gray-800 rounded-lg p-3">
-                <div className="font-semibold text-gray-300">{model}</div>
-                <div className="grid grid-cols-2 gap-1 text-gray-500">
-                  <span>In: {fmt(u.input_tokens)}</span>
-                  <span>Out: {fmt(u.output_tokens)}</span>
-                  <span>Cache Read: {fmt(u.cache_read_tokens)}</span>
-                  <span>Cache Write: {fmt(u.cache_creation_tokens)}</span>
-                </div>
-              </div>
-            ))}
-            <div className="text-xs text-gray-600">Stats from: {claude.last_computed_date || "n/a"}</div>
+            <div className="text-xs text-gray-600">
+              {claude.first_session_date && `Since: ${claude.first_session_date}`}
+            </div>
           </div>
         </Card>
 
