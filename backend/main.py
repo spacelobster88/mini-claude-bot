@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.db.engine import get_db
-from backend.routers import chat, cron, memory
+from backend.routers import chat, cron, memory, metrics
 from backend.services.scheduler import start_scheduler, shutdown_scheduler
 
 
@@ -28,6 +28,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(cron.router)
 app.include_router(memory.router)
+app.include_router(metrics.router)
 
 
 @app.get("/api/health")
