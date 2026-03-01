@@ -1,0 +1,97 @@
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from backend.db.engine import get_db
+from backend.db.vector import store_memory_embedding, search_memory
+
+router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+
+class MemoryCreate(BaseModel):
+    key: str
+    content: str
+    category: str = "general"
+
+
+class MemoryUpdate(BaseModel):
+    content: str | None = None
+    category: str | None = None
+
+
+@router.get("")
+def list_memories(category: str | None = None):
+    db = get_db()
+    if category:
+        rows = db.execute(
+            "SELECT * FROM memory WHERE category = ? ORDER BY updated_at DESC",
+            (category,),
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM memory ORDER BY updated_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("", status_code=201)
+async def create_memory(mem: MemoryCreate):
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        cursor = db.execute(
+            "INSERT INTO memory (key, content, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (mem.key, mem.content, mem.category, now, now),
+        )
+        db.commit()
+    except Exception:
+        raise HTTPException(409, f"Memory with key '{mem.key}' already exists")
+
+    memory_id = cursor.lastrowid
+    try:
+        await store_memory_embedding(memory_id, mem.content)
+    except Exception:
+        pass
+
+    return {"id": memory_id}
+
+
+@router.put("/{memory_id}")
+async def update_memory(memory_id: int, update: MemoryUpdate):
+    db = get_db()
+    row = db.execute("SELECT * FROM memory WHERE id = ?", (memory_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Memory not found")
+
+    fields = update.model_dump(exclude_none=True)
+    if not fields:
+        return dict(row)
+
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [memory_id]
+    db.execute(f"UPDATE memory SET {set_clause} WHERE id = ?", values)
+    db.commit()
+
+    if "content" in fields:
+        try:
+            await store_memory_embedding(memory_id, fields["content"])
+        except Exception:
+            pass
+
+    updated = db.execute("SELECT * FROM memory WHERE id = ?", (memory_id,)).fetchone()
+    return dict(updated)
+
+
+@router.delete("/{memory_id}")
+def delete_memory(memory_id: int):
+    db = get_db()
+    db.execute("DELETE FROM memory WHERE id = ?", (memory_id,))
+    db.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+    db.commit()
+    return {"deleted": True}
+
+
+@router.get("/search")
+async def search_memories(q: str, limit: int = 10):
+    results = await search_memory(q, limit)
+    return results

@@ -1,0 +1,102 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm, top=2.8cm, bottom=2.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{fontspec}
+\usepackage{tikz}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+\setmainfont{Helvetica Neue}
+
+% Color palette
+\definecolor{titleblue}{HTML}{1e3a5f}
+\definecolor{sectionblue}{HTML}{2563eb}
+\definecolor{linkblue}{HTML}{1d4ed8}
+\definecolor{heartpink}{HTML}{e11d48}
+\definecolor{lightbg}{HTML}{f8fafc}
+\definecolor{accentgold}{HTML}{d97706}
+\definecolor{subtlegray}{HTML}{94a3b8}
+\definecolor{sectionbg}{HTML}{eff6ff}
+\definecolor{rulegray}{HTML}{cbd5e1}
+\definecolor{lovebg}{HTML}{fff1f2}
+\definecolor{loveborder}{HTML}{fda4af}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkblue,
+    urlcolor=linkblue,
+    pdfauthor={mini-claude-bot},
+    pdftitle={Daily Intelligence Report - <<DATE>>},
+}
+
+% Paragraph spacing
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+% Section styling
+\titleformat{\section}
+  {\large\bfseries\sffamily\color{sectionblue}}
+  {}{0em}{}
+  [\vspace{-0.4em}{\color{rulegray}\rule{\textwidth}{0.4pt}}]
+\titlespacing{\section}{0pt}{1.2em}{0.4em}
+
+\titleformat{\subsection}{\normalsize\bfseries\sffamily\color{titleblue}}{}{0em}{}
+\titlespacing{\subsection}{0pt}{0.6em}{0.2em}
+
+% List styling — tight
+\setlist[itemize]{leftmargin=1.5em, itemsep=0.15em, parsep=0pt, topsep=0.3em}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{subtlegray} Daily Intelligence Report}
+\fancyhead[R]{\small\sffamily\color{subtlegray} <<DATE>>}
+\fancyfoot[C]{\small\sffamily\color{subtlegray} \thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rulegray}\leaders\hrule height \headrulewidth\hfill}}
+
+\begin{document}
+
+% Title block
+\begin{center}
+\begin{tikzpicture}
+\fill[titleblue, rounded corners=4pt] (0,0) rectangle (\textwidth, 2.8cm);
+\node[anchor=center, white] at (0.5\textwidth, 1.8cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily Daily Intelligence Report};
+\node[anchor=center, white, opacity=0.85] at (0.5\textwidth, 0.95cm) {\Large\sffamily <<DATE>>};
+\node[anchor=center, white, opacity=0.6] at (0.5\textwidth, 0.35cm) {\small\sffamily mini-claude-bot};
+\end{tikzpicture}
+\end{center}
+\vspace{1em}
+
+<<CONTENT>>
+
+\vfill
+
+% Love note box
+\begin{tcolorbox}[
+    colback=lovebg,
+    colframe=loveborder,
+    arc=6pt,
+    boxrule=0.8pt,
+    left=12pt, right=12pt, top=10pt, bottom=10pt,
+    width=0.75\textwidth,
+    center,
+]
+\centering
+{\large\color{heartpink}\bfseries <<LOVE_NOTE>>}\\[0.4em]
+{\color{heartpink} With all my love}
+\end{tcolorbox}
+
+\vspace{1em}
+\begin{center}
+{\small\color{subtlegray}\rule{0.3\textwidth}{0.3pt}}\\[0.5em]
+{\small\color{subtlegray}\sffamily mini-claude-bot Daily Report · <<DATE>>}
+\end{center}
+
+\end{document}

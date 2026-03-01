@@ -1,0 +1,107 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{xeCJK}
+\usepackage[margin=2.2cm, top=2.8cm, bottom=2.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{fontspec}
+\usepackage{tikz}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+\setCJKmainfont{Songti SC}
+\setCJKsansfont{Heiti SC}
+\setCJKmonofont{Kaiti SC}
+\setmainfont{Helvetica Neue}
+
+% Color palette
+\definecolor{titleblue}{HTML}{1e3a5f}
+\definecolor{sectionblue}{HTML}{2563eb}
+\definecolor{linkblue}{HTML}{1d4ed8}
+\definecolor{riskred}{HTML}{dc2626}
+\definecolor{growgreen}{HTML}{16a34a}
+\definecolor{lightbg}{HTML}{f8fafc}
+\definecolor{accentgold}{HTML}{d97706}
+\definecolor{subtlegray}{HTML}{94a3b8}
+\definecolor{sectionbg}{HTML}{eff6ff}
+\definecolor{rulegray}{HTML}{cbd5e1}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkblue,
+    urlcolor=linkblue,
+    pdfauthor={mini-claude-bot},
+    pdftitle={每日智能报告 - <<DATE>>},
+}
+
+% Paragraph spacing
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+
+% Section styling
+\titleformat{\section}
+  {\large\bfseries\sffamily\color{sectionblue}}
+  {}{0em}{}
+  [\vspace{-0.4em}{\color{rulegray}\rule{\textwidth}{0.4pt}}]
+\titlespacing{\section}{0pt}{1.2em}{0.4em}
+
+\titleformat{\subsection}{\normalsize\bfseries\sffamily\color{titleblue}}{}{0em}{}
+\titlespacing{\subsection}{0pt}{0.6em}{0.2em}
+
+% List styling — tight
+\setlist[itemize]{leftmargin=1.5em, itemsep=0.15em, parsep=0pt, topsep=0.3em}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{subtlegray} 每日智能报告}
+\fancyhead[R]{\small\sffamily\color{subtlegray} <<DATE>>}
+\fancyfoot[C]{\small\sffamily\color{subtlegray} \thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rulegray}\leaders\hrule height \headrulewidth\hfill}}
+
+\begin{document}
+
+% Title block
+\begin{center}
+\begin{tikzpicture}
+\fill[titleblue, rounded corners=4pt] (0,0) rectangle (\textwidth, 2.8cm);
+\node[anchor=center, white] at (0.5\textwidth, 1.8cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily 每日智能报告};
+\node[anchor=center, white, opacity=0.85] at (0.5\textwidth, 0.95cm) {\Large\sffamily <<DATE>>};
+\node[anchor=center, white, opacity=0.6] at (0.5\textwidth, 0.35cm) {\small\sffamily mini-claude-bot · 自动生成};
+\end{tikzpicture}
+\end{center}
+\vspace{0.8em}
+
+\noindent{\sffamily\color{titleblue} 童总，您好！以下是今日资讯摘要，祝您阅读愉快。}
+\vspace{0.5em}
+
+<<CONTENT>>
+
+\vfill
+
+\begin{tcolorbox}[
+    colback=sectionbg,
+    colframe=rulegray,
+    arc=6pt,
+    boxrule=0.6pt,
+    left=12pt, right=12pt, top=10pt, bottom=10pt,
+    width=0.8\textwidth,
+    center,
+]
+\centering
+{\sffamily\color{titleblue}\bfseries 祝童总和夫人身体健康、万事如意！}\\[0.3em]
+{\small\color{subtlegray}\sffamily --- Eddie}
+\end{tcolorbox}
+
+\vspace{0.8em}
+\begin{center}
+{\small\color{subtlegray}\rule{0.3\textwidth}{0.3pt}}\\[0.5em]
+{\small\color{subtlegray}\sffamily mini-claude-bot 每日智能报告 · <<DATE>>}
+\end{center}
+
+\end{document}
