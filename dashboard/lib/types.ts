@@ -18,11 +18,18 @@ export interface CronJob {
   timezone: string | null;
 }
 
+export interface MemoryItem {
+  key: string;
+  content: string;
+  category: string;
+}
+
 export interface MemorySummary {
   count: number;
   categories: Record<string, number>;
   oldest: string | null;
   newest: string | null;
+  items?: MemoryItem[];
 }
 
 export interface ChatSummary {
@@ -33,14 +40,17 @@ export interface ChatSummary {
 }
 
 export interface ClaudeUsage {
-  last_computed_date: string | null;
+  last_computed_date?: string | null;
   total_sessions: number;
   total_messages: number;
+  total_requests?: number;
   first_session_date: string | null;
   model_usage: Record<string, ModelUsage>;
   daily_activity: DailyActivity[];
-  daily_model_tokens: DailyModelTokens[];
-  hour_counts: Record<string, number>;
+  daily_model_tokens?: DailyModelTokens[];
+  hour_counts?: Record<string, number>;
+  context_avg?: number;
+  context_max?: number;
 }
 
 export interface ModelUsage {
@@ -48,15 +58,16 @@ export interface ModelUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
-  web_search_requests: number;
-  cost_usd: number;
+  requests?: number;
+  web_search_requests?: number;
+  cost_usd?: number;
 }
 
 export interface DailyActivity {
   date: string;
   messages: number;
   sessions: number;
-  tool_calls: number;
+  tool_calls?: number;
 }
 
 export interface DailyModelTokens {

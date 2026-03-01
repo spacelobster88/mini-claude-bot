@@ -37,6 +37,10 @@ def get_metrics():
     ).fetchall()
     mem_oldest = db.execute("SELECT MIN(created_at) as t FROM memory").fetchone()["t"]
     mem_newest = db.execute("SELECT MAX(created_at) as t FROM memory").fetchone()["t"]
+    mem_items = db.execute(
+        "SELECT key, content, category FROM memory ORDER BY category, key"
+    ).fetchall()
+    mem_items_list = [{"key": r["key"], "content": r["content"], "category": r["category"]} for r in mem_items]
 
     # Claude stats (includes session/message counts and daily activity)
     claude = read_claude_stats()
@@ -49,6 +53,7 @@ def get_metrics():
             "categories": {r["category"]: r["c"] for r in mem_cats},
             "oldest": mem_oldest,
             "newest": mem_newest,
+            "items": mem_items_list,
         },
         "chat": {
             "session_count": claude.get("total_sessions", 0),

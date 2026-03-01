@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { DashboardMetrics } from "@/lib/types";
 
 function timeAgo(iso: string | null): string {
@@ -41,6 +41,7 @@ export default function Dashboard() {
   const [data, setData] = useState<(DashboardMetrics & { _last_push?: string }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [expandedCat, setExpandedCat] = useState<string | null>(null);
 
   const fetchMetrics = async () => {
     try {
@@ -140,16 +141,45 @@ export default function Dashboard() {
         {/* Claude Usage */}
         <Card title="Claude Usage">
           <div className="space-y-2">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <div className="bg-gray-800 rounded-lg p-3 text-center">
-                <div className="text-xl font-bold text-blue-400">{fmt(totalMessages)}</div>
+                <div className="text-lg font-bold text-blue-400">{fmt(totalMessages)}</div>
                 <div className="text-xs text-gray-500">Messages</div>
               </div>
               <div className="bg-gray-800 rounded-lg p-3 text-center">
-                <div className="text-xl font-bold text-emerald-400">{claude.total_sessions}</div>
+                <div className="text-lg font-bold text-emerald-400">{claude.total_sessions}</div>
                 <div className="text-xs text-gray-500">Sessions</div>
               </div>
+              <div className="bg-gray-800 rounded-lg p-3 text-center">
+                <div className="text-lg font-bold text-amber-400">{fmt(claude.total_requests || 0)}</div>
+                <div className="text-xs text-gray-500">API Calls</div>
+              </div>
             </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-gray-400">Context Window</span>
+                <span className="text-gray-500">max 200k</span>
+              </div>
+              <ProgressBar value={claude.context_max || 0} max={200000} color="bg-blue-500" />
+              <div className="flex justify-between text-xs text-gray-500 mt-1">
+                <span>Avg: {fmt(claude.context_avg || 0)}</span>
+                <span>Peak: {fmt(claude.context_max || 0)}</span>
+              </div>
+            </div>
+            {Object.entries(claude.model_usage || {}).map(([model, u]: [string, any]) => (
+              <div key={model} className="text-xs space-y-1 bg-gray-800 rounded-lg p-3">
+                <div className="flex justify-between">
+                  <span className="font-semibold text-gray-300">{model}</span>
+                  <span className="text-gray-500">{fmt(u.requests)} reqs</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-gray-500">
+                  <span>In: {fmt(u.input_tokens)}</span>
+                  <span>Out: {fmt(u.output_tokens)}</span>
+                  <span>Cache Read: {fmt(u.cache_read_tokens)}</span>
+                  <span>Cache Write: {fmt(u.cache_creation_tokens)}</span>
+                </div>
+              </div>
+            ))}
             <div className="text-xs text-gray-600">
               {claude.first_session_date && `Since: ${claude.first_session_date}`}
             </div>
@@ -193,11 +223,31 @@ export default function Dashboard() {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(mem.categories).map(([cat, count]) => (
-              <span key={cat} className="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded-full">
+              <button
+                key={cat}
+                onClick={() => setExpandedCat(expandedCat === cat ? null : cat)}
+                className={`text-xs px-2 py-1 rounded-full transition-colors cursor-pointer ${
+                  expandedCat === cat
+                    ? "bg-amber-600 text-white"
+                    : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-300"
+                }`}
+              >
                 {cat}: {count}
-              </span>
+              </button>
             ))}
           </div>
+          {expandedCat && mem.items && (
+            <div className="mt-3 space-y-2">
+              {mem.items
+                .filter((item) => item.category === expandedCat)
+                .map((item) => (
+                  <div key={item.key} className="bg-gray-800 rounded-lg p-3">
+                    <div className="text-xs font-semibold text-amber-400 mb-1">{item.key}</div>
+                    <div className="text-xs text-gray-400 whitespace-pre-wrap">{item.content}</div>
+                  </div>
+                ))}
+            </div>
+          )}
         </Card>
 
         {/* Chat */}
