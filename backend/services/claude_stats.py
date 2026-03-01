@@ -3,7 +3,10 @@ import json
 import os
 import glob
 from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+PST = timezone(timedelta(hours=-8))
 
 
 def _scan_sessions() -> dict:
@@ -33,7 +36,9 @@ def _scan_sessions() -> dict:
                         msg_type = d.get("type", "")
                         if msg_type in ("user", "assistant") and ts:
                             total_messages += 1
-                            date = ts[:10]
+                            # Convert UTC timestamp to PST for date grouping
+                            utc_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                            date = utc_dt.astimezone(PST).strftime("%Y-%m-%d")
                             daily[date]["messages"] += 1
                             daily[date]["sessions"].add(session_id)
                             if first_date is None or date < first_date:
