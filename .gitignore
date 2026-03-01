@@ -24,6 +24,9 @@ data/
 *.swp
 *.swo
 
+# Reports output (generated PDFs/tex)
+reports/output/
+
 # OS
 .DS_Store
 Thumbs.db
