@@ -38,13 +38,8 @@ def get_metrics():
     mem_oldest = db.execute("SELECT MIN(created_at) as t FROM memory").fetchone()["t"]
     mem_newest = db.execute("SELECT MAX(created_at) as t FROM memory").fetchone()["t"]
 
-    # Chat stats
-    chat_sessions = db.execute(
-        "SELECT COUNT(DISTINCT session_id) as c FROM chat_messages"
-    ).fetchone()["c"]
-    chat_messages = db.execute("SELECT COUNT(*) as c FROM chat_messages").fetchone()["c"]
-    chat_oldest = db.execute("SELECT MIN(created_at) as t FROM chat_messages").fetchone()["t"]
-    chat_newest = db.execute("SELECT MAX(created_at) as t FROM chat_messages").fetchone()["t"]
+    # Claude stats (includes session/message counts and daily activity)
+    claude = read_claude_stats()
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -56,11 +51,11 @@ def get_metrics():
             "newest": mem_newest,
         },
         "chat": {
-            "session_count": chat_sessions,
-            "message_count": chat_messages,
-            "oldest_message": chat_oldest,
-            "newest_message": chat_newest,
+            "session_count": claude.get("total_sessions", 0),
+            "message_count": claude.get("total_messages", 0),
+            "oldest_message": claude.get("first_session_date"),
+            "newest_message": claude.get("daily_activity", [{}])[-1].get("date") if claude.get("daily_activity") else None,
         },
-        "claude_usage": read_claude_stats(),
+        "claude_usage": claude,
         "system": collect_system(),
     }
