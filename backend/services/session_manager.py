@@ -81,12 +81,16 @@ class SessionManager:
                 args.append("--continue")
             args.append(message)
 
+            # Clean env: remove CLAUDECODE to avoid "nested session" error
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
                 timeout=CLAUDE_TIMEOUT,
                 cwd=session.cwd,
+                env=env,
             )
 
             with session.lock:
