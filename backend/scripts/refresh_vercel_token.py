@@ -34,24 +34,18 @@ def token_remaining_seconds(auth: dict) -> float:
 
 
 def refresh_token(auth: dict) -> dict:
-    """Use Vercel API to refresh the token."""
-    import httpx
-
-    resp = httpx.post(
-        "https://api.vercel.com/registration/token/refresh",
-        json={"refreshToken": auth["refreshToken"]},
-        timeout=30,
+    """Refresh by invoking Vercel CLI (which handles its own token refresh)."""
+    result = subprocess.run(
+        ["/opt/homebrew/bin/vercel", "whoami"],
+        capture_output=True, text=True, timeout=30,
     )
-    if resp.status_code != 200:
-        print(f"ERROR: refresh failed: {resp.status_code} {resp.text}", file=sys.stderr)
+    if result.returncode != 0:
+        print(f"ERROR: vercel whoami failed: {result.stderr}", file=sys.stderr)
         sys.exit(1)
 
-    data = resp.json()
-    auth["token"] = data["token"]
-    auth["expiresAt"] = data["expiresAt"]
-    if "refreshToken" in data:
-        auth["refreshToken"] = data["refreshToken"]
-    return auth
+    # Vercel CLI refreshes auth.json internally
+    refreshed = load_auth()
+    return refreshed
 
 
 def update_vercel_env(token: str):

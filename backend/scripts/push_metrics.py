@@ -160,25 +160,17 @@ def get_vercel_token() -> str:
         if not refresh_token:
             raise RuntimeError("Token expired and no refresh token available")
 
-        resp = httpx.post(
-            "https://api.vercel.com/v2/oauth/access-token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
-            timeout=30,
+        # Use Vercel CLI to refresh (it handles token refresh internally)
+        result = subprocess.run(
+            ["/opt/homebrew/bin/vercel", "whoami"],
+            capture_output=True, text=True, timeout=30,
         )
-        if resp.status_code != 200:
-            raise RuntimeError(f"Token refresh failed: {resp.status_code} {resp.text}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Vercel CLI refresh failed: {result.stderr}")
 
-        data = resp.json()
-        new_auth = {
-            "token": data["access_token"],
-            "expiresAt": int(time.time()) + data.get("expires_in", 3600),
-            "refreshToken": data.get("refresh_token", refresh_token),
-        }
-        VERCEL_CLI_AUTH.write_text(json.dumps(new_auth))
-        token = new_auth["token"]
+        # Re-read the token that CLI refreshed
+        refreshed = json.loads(VERCEL_CLI_AUTH.read_text())
+        token = refreshed["token"]
 
     return token
 

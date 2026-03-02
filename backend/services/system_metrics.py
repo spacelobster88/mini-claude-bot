@@ -24,10 +24,10 @@ def collect() -> dict:
     metrics: dict = {}
 
     # CPU brand
-    metrics["cpu"] = _run(["sysctl", "-n", "machdep.cpu.brand_string"])
+    metrics["cpu"] = _run(["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"])
 
     # Total RAM
-    mem_bytes = int(_run(["sysctl", "-n", "hw.memsize"]))
+    mem_bytes = int(_run(["/usr/sbin/sysctl", "-n", "hw.memsize"]))
     metrics["memory_total_gb"] = round(mem_bytes / (1024**3), 1)
 
     # CPU + memory from top
