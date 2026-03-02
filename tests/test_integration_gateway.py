@@ -92,7 +92,7 @@ def test_send_with_optional_fields(mock_run, client):
         "chat_id": "111",
         "message": "hi",
         "user_id": "42",
-        "username": "eddie",
+        "username": "testuser",
     })
     assert r.status_code == 200
 
