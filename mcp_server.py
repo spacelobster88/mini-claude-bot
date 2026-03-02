@@ -180,5 +180,47 @@ def list_chat_sessions() -> list[dict]:
     return _get("/chat/sessions")
 
 
+# ── Gateway Sessions ──────────────────────────────────────────
+
+def _post_gateway(path: str, json: dict | None = None) -> dict:
+    """POST to gateway with longer timeout (Claude CLI can take minutes)."""
+    r = httpx.post(f"{API_BASE}{path}", json=json, timeout=360)
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def list_gateway_sessions() -> list[dict]:
+    """List all active gateway sessions (multi-chat Claude CLI sessions).
+
+    Returns session info including chat_id, busy status, idle time.
+    """
+    return _get("/gateway/sessions")
+
+
+@mcp.tool()
+def stop_gateway_session(chat_id: str) -> dict:
+    """Stop a gateway session and clean up its Claude CLI state.
+
+    Args:
+        chat_id: The Telegram chat ID of the session to stop
+    """
+    return _post("/gateway/stop", json={"chat_id": chat_id})
+
+
+@mcp.tool()
+def send_gateway_message(chat_id: str, message: str) -> dict:
+    """Send a message to a specific chat via the gateway.
+
+    Creates a new session if one doesn't exist for this chat_id.
+    Uses Claude CLI with CWD-based isolation per chat.
+
+    Args:
+        chat_id: The Telegram chat ID to send to
+        message: The message/prompt to send to Claude
+    """
+    return _post_gateway("/gateway/send", json={"chat_id": chat_id, "message": message})
+
+
 if __name__ == "__main__":
     mcp.run()

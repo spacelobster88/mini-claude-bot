@@ -1,0 +1,86 @@
+"""Gateway router: HTTP API for multi-session Claude CLI access.
+
+telegram-claude-hero forwards messages here instead of spawning
+Claude CLI directly. Each chat_id gets an isolated session.
+"""
+
+import asyncio
+
+from fastapi import APIRouter
+from pydantic import BaseModel
+
+from backend.db.engine import get_db
+from backend.db.vector import store_chat_embedding
+from backend.services.session_manager import get_session_manager
+
+router = APIRouter(prefix="/api/gateway", tags=["gateway"])
+
+
+class SendRequest(BaseModel):
+    chat_id: str
+    message: str
+    user_id: str | None = None  # for audit, not isolation
+    username: str | None = None  # for audit, not isolation
+
+
+class SendResponse(BaseModel):
+    response: str
+    session_key: str
+
+
+class StopRequest(BaseModel):
+    chat_id: str
+
+
+@router.post("/send")
+async def gateway_send(req: SendRequest) -> SendResponse:
+    manager = get_session_manager()
+    session_id = f"gw-{req.chat_id}"
+
+    # Store user message
+    db = get_db()
+    cursor = db.execute(
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
+           VALUES (?, ?, ?, ?, ?)""",
+        (session_id, "user", req.message, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+    )
+    db.commit()
+    user_msg_id = cursor.lastrowid
+
+    # Best-effort embedding
+    try:
+        await store_chat_embedding(user_msg_id, req.message)
+    except Exception:
+        pass
+
+    # Send to Claude (blocking → offload to threadpool)
+    response = await asyncio.to_thread(manager.send, req.chat_id, req.message)
+
+    # Store assistant response
+    cursor = db.execute(
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
+           VALUES (?, ?, ?, ?, ?)""",
+        (session_id, "assistant", response, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+    )
+    db.commit()
+    assistant_msg_id = cursor.lastrowid
+
+    try:
+        await store_chat_embedding(assistant_msg_id, response)
+    except Exception:
+        pass
+
+    return SendResponse(response=response, session_key=req.chat_id)
+
+
+@router.post("/stop")
+def gateway_stop(req: StopRequest):
+    manager = get_session_manager()
+    stopped = manager.stop_session(req.chat_id)
+    return {"stopped": stopped}
+
+
+@router.get("/sessions")
+def gateway_list_sessions():
+    manager = get_session_manager()
+    return manager.list_sessions()
