@@ -56,7 +56,7 @@ def _execute_job(job_id: int) -> None:
             output = result.stdout or result.stderr
         elif job["job_type"] == "claude":
             result = subprocess.run(
-                ["claude", "-p", "--output-format", "text", job["command"]],
+                ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "text", job["command"]],
                 capture_output=True,
                 text=True,
                 timeout=300,

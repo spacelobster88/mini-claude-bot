@@ -5,6 +5,26 @@ export interface DashboardMetrics {
   chat: ChatSummary;
   claude_usage: ClaudeUsage;
   system: SystemMetrics;
+  db_health?: DbHealth;
+  ollama_models?: OllamaModel[];
+  services?: ServiceStatus[];
+}
+
+export interface DbHealth {
+  db_size_mb: number;
+  chat_embeddings: number;
+  memory_embeddings: number;
+}
+
+export interface OllamaModel {
+  name: string;
+  size: string;
+}
+
+export interface ServiceStatus {
+  name: string;
+  type: string;
+  running: boolean;
 }
 
 export interface CronJob {
@@ -81,6 +101,11 @@ export interface SystemMetrics {
   memory_total_gb: number;
   memory_used_gb: number;
   memory_free_gb: number;
+  memory_wired_gb?: number;
+  memory_active_gb?: number;
+  memory_inactive_gb?: number;
+  memory_compressed_gb?: number;
+  memory_purgeable_gb?: number;
   cpu_usage_percent: number;
   cpu_idle_percent: number;
   load_avg: number[];

@@ -45,6 +45,20 @@ def collect() -> dict:
         metrics["memory_used_gb"] = used
         metrics["memory_free_gb"] = free
 
+    # Layered memory breakdown from vm_stat
+    vm_out = _run(["vm_stat"])
+    page_m = re.search(r"page size of (\d+) bytes", vm_out)
+    if page_m:
+        page_sz = int(page_m[1])
+        def _pages(label: str) -> float:
+            m = re.search(rf"{label}:\s+(\d+)", vm_out)
+            return round(int(m[1]) * page_sz / (1024**3), 2) if m else 0.0
+        metrics["memory_wired_gb"] = _pages("Pages wired down")
+        metrics["memory_active_gb"] = _pages("Pages active")
+        metrics["memory_inactive_gb"] = _pages("Pages inactive")
+        metrics["memory_compressed_gb"] = _pages("Pages occupied by compressor")
+        metrics["memory_purgeable_gb"] = _pages("Pages purgeable")
+
     load_m = re.search(r"Load Avg:\s+([\d.]+),\s+([\d.]+),\s+([\d.]+)", top_out)
     if load_m:
         metrics["load_avg"] = [float(load_m[i]) for i in range(1, 4)]

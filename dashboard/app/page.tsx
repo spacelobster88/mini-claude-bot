@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import type { DashboardMetrics } from "@/lib/types";
 
 function timeAgo(iso: string | null): string {
@@ -18,12 +19,53 @@ function fmt(n: number): string {
   return n.toLocaleString();
 }
 
+function thresholdColor(pct: number, normalBar: string, normalText: string): { bar: string; text: string } {
+  if (pct > 85) return { bar: "bg-red-500", text: "text-red-400" };
+  if (pct > 60) return { bar: "bg-yellow-500", text: "text-yellow-400" };
+  return { bar: normalBar, text: normalText };
+}
+
 function ProgressBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
   const barColor = pct > 85 ? "bg-red-500" : pct > 60 ? "bg-yellow-500" : color;
   return (
     <div className="w-full bg-gray-800 rounded-full h-2.5">
       <div className={`${barColor} h-2.5 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function MemoryBar({ sys }: { sys: DashboardMetrics["system"] }) {
+  const total = sys.memory_total_gb;
+  if (!total) return null;
+  const wired = sys.memory_wired_gb ?? 0;
+  const active = sys.memory_active_gb ?? 0;
+  const compressed = sys.memory_compressed_gb ?? 0;
+  const inactive = sys.memory_inactive_gb ?? 0;
+  const pct = (v: number) => Math.min((v / total) * 100, 100);
+  const pressure = wired + active;
+
+  const pressurePct = total > 0 ? (pressure / total) * 100 : 0;
+  const pressureTextColor = pressurePct > 85 ? "text-red-400" : pressurePct > 60 ? "text-yellow-400" : "text-purple-400";
+
+  return (
+    <div>
+      <div className="flex justify-between text-sm mb-1">
+        <span>Memory</span>
+        <span className={pressureTextColor}>{pressure.toFixed(1)}G pressure / {total}G</span>
+      </div>
+      <div className="w-full bg-gray-800 rounded-full h-3 flex overflow-hidden">
+        <div className="bg-red-500 h-3 transition-all" style={{ width: `${pct(wired)}%` }} title={`Wired: ${wired.toFixed(1)}G`} />
+        <div className="bg-orange-500 h-3 transition-all" style={{ width: `${pct(active)}%` }} title={`Active: ${active.toFixed(1)}G`} />
+        <div className="bg-yellow-500/60 h-3 transition-all" style={{ width: `${pct(compressed)}%` }} title={`Compressed: ${compressed.toFixed(1)}G`} />
+        <div className="bg-gray-600/40 h-3 transition-all" style={{ width: `${pct(inactive)}%` }} title={`Inactive: ${inactive.toFixed(1)}G`} />
+      </div>
+      <div className="flex gap-3 text-[10px] text-gray-500 mt-1.5 flex-wrap">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500 inline-block" />Wired {wired.toFixed(1)}G</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-orange-500 inline-block" />Active {active.toFixed(1)}G</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-yellow-500/60 inline-block" />Compressed {compressed.toFixed(1)}G</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-600/40 inline-block" />Inactive {inactive.toFixed(1)}G</span>
+      </div>
     </div>
   );
 }
@@ -85,7 +127,7 @@ export default function Dashboard() {
     );
   }
 
-  const { system: sys, claude_usage: claude, cron_jobs: jobs, memory: mem, chat } = data;
+  const { system: sys, claude_usage: claude, cron_jobs: jobs, memory: mem, chat, db_health: dbh, ollama_models: ollama, services } = data;
   const lastPush = data._last_push;
   const isOnline = lastPush ? Date.now() - new Date(lastPush).getTime() < 600000 : false;
 
@@ -110,27 +152,35 @@ export default function Dashboard() {
         {/* System */}
         <Card title="System">
           <div className="space-y-3">
+            {(() => { const c = thresholdColor(sys.cpu_usage_percent, "bg-blue-500", "text-blue-400"); return (
             <div>
               <div className="flex justify-between text-sm mb-1">
                 <span>CPU</span>
-                <span className="text-gray-400">{sys.cpu_usage_percent}%</span>
+                <span className={c.text}>{sys.cpu_usage_percent}%</span>
               </div>
-              <ProgressBar value={sys.cpu_usage_percent} max={100} color="bg-blue-500" />
+              <ProgressBar value={sys.cpu_usage_percent} max={100} color={c.bar} />
             </div>
-            <div>
-              <div className="flex justify-between text-sm mb-1">
-                <span>Memory</span>
-                <span className="text-gray-400">{sys.memory_used_gb}G / {sys.memory_total_gb}G</span>
+            ); })()}
+            {sys.memory_wired_gb != null ? (
+              <MemoryBar sys={sys} />
+            ) : (() => { const c = thresholdColor(sys.memory_total_gb > 0 ? (sys.memory_used_gb / sys.memory_total_gb) * 100 : 0, "bg-purple-500", "text-purple-400"); return (
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>Memory</span>
+                  <span className={c.text}>{sys.memory_used_gb}G / {sys.memory_total_gb}G</span>
+                </div>
+                <ProgressBar value={sys.memory_used_gb} max={sys.memory_total_gb} color={c.bar} />
               </div>
-              <ProgressBar value={sys.memory_used_gb} max={sys.memory_total_gb} color="bg-purple-500" />
-            </div>
+            ); })()}
+            {(() => { const c = thresholdColor(sys.disk_total_gb > 0 ? (sys.disk_used_gb / sys.disk_total_gb) * 100 : 0, "bg-emerald-500", "text-emerald-400"); return (
             <div>
               <div className="flex justify-between text-sm mb-1">
                 <span>Disk</span>
-                <span className="text-gray-400">{sys.disk_used_gb}G / {sys.disk_total_gb}G</span>
+                <span className={c.text}>{sys.disk_used_gb}G / {sys.disk_total_gb}G</span>
               </div>
-              <ProgressBar value={sys.disk_used_gb} max={sys.disk_total_gb} color="bg-emerald-500" />
+              <ProgressBar value={sys.disk_used_gb} max={sys.disk_total_gb} color={c.bar} />
             </div>
+            ); })()}
             <div className="flex justify-between text-xs text-gray-500 pt-1">
               <span>Load: {sys.load_avg?.join(" / ")}</span>
               <span>Up: {sys.uptime}</span>
@@ -166,6 +216,31 @@ export default function Dashboard() {
                 <span>Peak: {fmt(claude.context_max || 0)}</span>
               </div>
             </div>
+            {claude.daily_activity.length > 0 && (() => {
+              const days = claude.daily_activity.slice(-7).map((d) => ({
+                date: d.date.slice(5).replace("-", "/"),
+                Messages: d.messages,
+                Sessions: d.sessions,
+              }));
+              return (
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 mb-2">Last 7 Days</div>
+                  <ResponsiveContainer width="100%" height={140}>
+                    <LineChart data={days}>
+                      <XAxis dataKey="date" tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} width={35} />
+                      <Tooltip
+                        contentStyle={{ background: "#1f2937", border: "1px solid #374151", borderRadius: 8, fontSize: 12 }}
+                        itemStyle={{ color: "#d1d5db" }}
+                        labelStyle={{ color: "#9ca3af", fontWeight: 600 }}
+                      />
+                      <Line type="monotone" dataKey="Messages" stroke="#60a5fa" strokeWidth={2} dot={{ r: 3, fill: "#60a5fa" }} />
+                      <Line type="monotone" dataKey="Sessions" stroke="#34d399" strokeWidth={2} dot={{ r: 3, fill: "#34d399" }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
             {Object.entries(claude.model_usage || {}).map(([model, u]: [string, any]) => (
               <div key={model} className="text-xs space-y-1 bg-gray-800 rounded-lg p-3">
                 <div className="flex justify-between">
@@ -211,43 +286,61 @@ export default function Dashboard() {
 
         {/* Memory */}
         <Card title="Memory Store">
-          <div className="flex items-center gap-4 mb-3">
-            <div className="bg-gray-800 rounded-lg p-3 text-center flex-1">
-              <div className="text-2xl font-bold text-amber-400">{mem.count}</div>
-              <div className="text-xs text-gray-500">Memories</div>
+          <div className="h-[320px] flex flex-col">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="bg-gray-800 rounded-lg p-3 text-center flex-1">
+                <div className="text-2xl font-bold text-amber-400">{mem.count}</div>
+                <div className="text-xs text-gray-500">Memories</div>
+              </div>
+              <div className="text-xs text-gray-500 flex-1">
+                {mem.oldest && <div>From: {new Date(mem.oldest).toLocaleDateString()}</div>}
+                {mem.newest && <div>To: {new Date(mem.newest).toLocaleDateString()}</div>}
+              </div>
             </div>
-            <div className="text-xs text-gray-500 flex-1">
-              {mem.oldest && <div>From: {new Date(mem.oldest).toLocaleDateString()}</div>}
-              {mem.newest && <div>To: {new Date(mem.newest).toLocaleDateString()}</div>}
+            {dbh && (
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="bg-gray-800 rounded-lg px-2 py-1.5 text-center">
+                  <div className="text-sm font-bold text-amber-400">{dbh.db_size_mb} MB</div>
+                  <div className="text-[10px] text-gray-500">SQLite</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg px-2 py-1.5 text-center">
+                  <div className="text-sm font-bold text-purple-400">{dbh.chat_embeddings}</div>
+                  <div className="text-[10px] text-gray-500">Chat Vectors</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg px-2 py-1.5 text-center">
+                  <div className="text-sm font-bold text-purple-400">{dbh.memory_embeddings}</div>
+                  <div className="text-[10px] text-gray-500">Mem Vectors</div>
+                </div>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-1.5 shrink-0">
+              {Object.entries(mem.categories).map(([cat, count]) => (
+                <button
+                  key={cat}
+                  onClick={() => setExpandedCat(expandedCat === cat ? null : cat)}
+                  className={`text-xs px-2 py-1 rounded-full transition-colors cursor-pointer ${
+                    expandedCat === cat
+                      ? "bg-amber-600 text-white"
+                      : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-300"
+                  }`}
+                >
+                  {cat}: {count}
+                </button>
+              ))}
             </div>
+            {expandedCat && mem.items && (
+              <div className="mt-3 space-y-2 overflow-y-auto min-h-0">
+                {mem.items
+                  .filter((item) => item.category === expandedCat)
+                  .map((item) => (
+                    <div key={item.key} className="bg-gray-800 rounded-lg p-3">
+                      <div className="text-xs font-semibold text-amber-400 mb-1">{item.key}</div>
+                      <div className="text-xs text-gray-400 whitespace-pre-wrap">{item.content}</div>
+                    </div>
+                  ))}
+              </div>
+            )}
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(mem.categories).map(([cat, count]) => (
-              <button
-                key={cat}
-                onClick={() => setExpandedCat(expandedCat === cat ? null : cat)}
-                className={`text-xs px-2 py-1 rounded-full transition-colors cursor-pointer ${
-                  expandedCat === cat
-                    ? "bg-amber-600 text-white"
-                    : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-300"
-                }`}
-              >
-                {cat}: {count}
-              </button>
-            ))}
-          </div>
-          {expandedCat && mem.items && (
-            <div className="mt-3 space-y-2">
-              {mem.items
-                .filter((item) => item.category === expandedCat)
-                .map((item) => (
-                  <div key={item.key} className="bg-gray-800 rounded-lg p-3">
-                    <div className="text-xs font-semibold text-amber-400 mb-1">{item.key}</div>
-                    <div className="text-xs text-gray-400 whitespace-pre-wrap">{item.content}</div>
-                  </div>
-                ))}
-            </div>
-          )}
         </Card>
 
         {/* Chat */}
@@ -269,27 +362,36 @@ export default function Dashboard() {
           )}
         </Card>
 
-        {/* Daily Activity */}
-        <Card title="Daily Activity">
-          {claude.daily_activity.length > 0 ? (
-            <div className="space-y-1.5">
-              {claude.daily_activity.slice(-7).map((day) => {
-                const maxMsg = Math.max(...claude.daily_activity.map((d) => d.messages), 1);
-                return (
-                  <div key={day.date} className="flex items-center gap-2 text-xs">
-                    <span className="text-gray-500 w-20 shrink-0">{day.date}</span>
-                    <div className="flex-1 bg-gray-800 rounded-full h-3">
-                      <div className="bg-blue-600 h-3 rounded-full" style={{ width: `${(day.messages / maxMsg) * 100}%` }} />
-                    </div>
-                    <span className="text-gray-500 w-12 text-right">{day.messages}</span>
+        {/* Other AI Services */}
+        <Card title="Other AI Services">
+          <div className="space-y-2">
+            {services && services.length > 0 && (
+              <div className="grid grid-cols-2 gap-1.5">
+                {services.map((svc) => (
+                  <div key={svc.name} className="bg-gray-800 rounded-lg px-3 py-2 flex items-center justify-between">
+                    <span className="text-xs text-gray-300">{svc.name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                      svc.type === "agent" ? "bg-blue-900/50 text-blue-400" :
+                      svc.type === "local" ? "bg-purple-900/50 text-purple-400" :
+                      svc.type === "bridge" ? "bg-cyan-900/50 text-cyan-400" :
+                      "bg-gray-700 text-gray-400"
+                    }`}>{svc.type}</span>
                   </div>
-                );
-              })}
-              <div className="text-xs text-gray-600 pt-1">Messages per day (last 7)</div>
-            </div>
-          ) : (
-            <div className="text-sm text-gray-600">No activity data</div>
-          )}
+                ))}
+              </div>
+            )}
+            {ollama && ollama.length > 0 && (
+              <div>
+                <div className="text-xs text-gray-500 mb-1.5">Local Models (Ollama)</div>
+                {ollama.map((m) => (
+                  <div key={m.name} className="flex justify-between text-xs py-1 border-b border-gray-800 last:border-0">
+                    <span className="text-gray-300 font-mono">{m.name}</span>
+                    <span className="text-gray-600">{m.size}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </Card>
       </div>
 
