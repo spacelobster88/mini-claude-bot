@@ -1,34 +1,54 @@
 """MCP server that proxies to the mini-claude-bot FastAPI backend."""
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("mini-claude-bot")
 
-API_BASE = "http://localhost:8000/api"
+API_BASE = os.getenv("MCB_API_BASE", "http://localhost:8000/api")
+DEFAULT_TIMEOUT = int(os.getenv("MCB_MCP_TIMEOUT", "30"))
+GATEWAY_TIMEOUT = int(os.getenv("MCB_GATEWAY_TIMEOUT", "360"))
 
 
 def _get(path: str, params: dict | None = None) -> dict | list:
-    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=30)
+    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
 
 def _post(path: str, json: dict | None = None) -> dict:
-    r = httpx.post(f"{API_BASE}{path}", json=json, timeout=30)
+    r = httpx.post(f"{API_BASE}{path}", json=json, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
 
 def _put(path: str, json: dict) -> dict:
-    r = httpx.put(f"{API_BASE}{path}", json=json, timeout=30)
+    r = httpx.put(f"{API_BASE}{path}", json=json, timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
 
 def _delete(path: str) -> dict:
-    r = httpx.delete(f"{API_BASE}{path}", timeout=30)
+    r = httpx.delete(f"{API_BASE}{path}", timeout=DEFAULT_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+async def _post_gateway_async(path: str, json: dict | None = None) -> dict:
+    """Async POST for long-running gateway operations."""
+    async with httpx.AsyncClient() as client:
+        r = await client.post(f"{API_BASE}{path}", json=json, timeout=GATEWAY_TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+
+
+# ── Health ────────────────────────────────────────────────────
+
+@mcp.tool()
+def health_check() -> dict:
+    """Check if the mini-claude-bot backend is running and healthy."""
+    return _get("/health")
 
 
 # ── CRON Jobs ──────────────────────────────────────────────────
@@ -115,6 +135,17 @@ def run_cron_job(job_id: int) -> dict:
     return _post(f"/cron/{job_id}/run")
 
 
+@mcp.tool()
+def get_cron_job_history(job_id: int, limit: int = 20) -> list[dict]:
+    """Get execution history for a specific CRON job.
+
+    Args:
+        job_id: The ID of the job
+        limit: Maximum number of history entries to return
+    """
+    return _get(f"/cron/{job_id}/history", params={"limit": limit})
+
+
 # ── Memory ─────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -127,6 +158,23 @@ def add_memory(key: str, content: str, category: str = "general") -> dict:
         category: Category for organizing memories (e.g. 'preferences', 'facts', 'architecture')
     """
     return _post("/memory", json={"key": key, "content": content, "category": category})
+
+
+@mcp.tool()
+def update_memory(memory_id: int, content: str | None = None, category: str | None = None) -> dict:
+    """Update an existing memory's content or category.
+
+    Args:
+        memory_id: The ID of the memory to update
+        content: New content (triggers re-embedding)
+        category: New category
+    """
+    payload = {}
+    if content is not None:
+        payload["content"] = content
+    if category is not None:
+        payload["category"] = category
+    return _put(f"/memory/{memory_id}", json=payload)
 
 
 @mcp.tool()
@@ -182,13 +230,6 @@ def list_chat_sessions() -> list[dict]:
 
 # ── Gateway Sessions ──────────────────────────────────────────
 
-def _post_gateway(path: str, json: dict | None = None) -> dict:
-    """POST to gateway with longer timeout (Claude CLI can take minutes)."""
-    r = httpx.post(f"{API_BASE}{path}", json=json, timeout=360)
-    r.raise_for_status()
-    return r.json()
-
-
 @mcp.tool()
 def list_gateway_sessions() -> list[dict]:
     """List all active gateway sessions (multi-chat Claude CLI sessions).
@@ -209,7 +250,19 @@ def stop_gateway_session(chat_id: str) -> dict:
 
 
 @mcp.tool()
-def send_gateway_message(chat_id: str, message: str) -> dict:
+def reset_gateway_session(chat_id: str) -> dict:
+    """Reset a gateway session's state (emergency recovery).
+
+    Stops the session, clears Claude CLI state, and allows fresh start.
+
+    Args:
+        chat_id: The Telegram chat ID of the session to reset
+    """
+    return _post(f"/gateway/sessions/{chat_id}/reset")
+
+
+@mcp.tool()
+async def send_gateway_message(chat_id: str, message: str) -> dict:
     """Send a message to a specific chat via the gateway.
 
     Creates a new session if one doesn't exist for this chat_id.
@@ -219,7 +272,7 @@ def send_gateway_message(chat_id: str, message: str) -> dict:
         chat_id: The Telegram chat ID to send to
         message: The message/prompt to send to Claude
     """
-    return _post_gateway("/gateway/send", json={"chat_id": chat_id, "message": message})
+    return await _post_gateway_async("/gateway/send", json={"chat_id": chat_id, "message": message})
 
 
 if __name__ == "__main__":

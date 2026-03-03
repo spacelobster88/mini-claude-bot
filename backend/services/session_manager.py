@@ -41,6 +41,58 @@ class SessionManager:
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
+        self._load_persisted_sessions()
+
+    def _get_db(self):
+        """Lazy import to avoid circular dependency."""
+        from backend.db.engine import get_db
+        return get_db()
+
+    def _load_persisted_sessions(self):
+        """Load sessions from DB on startup. Reset busy flags (stale from crash)."""
+        try:
+            db = self._get_db()
+            rows = db.execute("SELECT * FROM gateway_sessions").fetchall()
+            for row in rows:
+                row = dict(row)
+                cwd = row["cwd"]
+                os.makedirs(cwd, exist_ok=True)
+                session = GatewaySession(
+                    chat_id=row["chat_id"],
+                    cwd=cwd,
+                    first_done=bool(row["first_done"]),
+                    busy=False,  # always reset on startup
+                    last_active=row["last_active"],
+                )
+                self._sessions[row["chat_id"]] = session
+                logger.info("Restored session chat_id=%s from DB", row["chat_id"])
+        except Exception as e:
+            # Table might not exist yet on first run
+            logger.debug("Could not load persisted sessions: %s", e)
+
+    def _persist_session(self, session: GatewaySession) -> None:
+        """Write session state to DB (upsert)."""
+        try:
+            db = self._get_db()
+            db.execute(
+                """INSERT OR REPLACE INTO gateway_sessions
+                   (chat_id, cwd, first_done, busy, last_active)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session.chat_id, session.cwd, int(session.first_done),
+                 int(session.busy), session.last_active),
+            )
+            db.commit()
+        except Exception as e:
+            logger.debug("Could not persist session: %s", e)
+
+    def _delete_persisted_session(self, chat_id: str) -> None:
+        """Remove session from DB."""
+        try:
+            db = self._get_db()
+            db.execute("DELETE FROM gateway_sessions WHERE chat_id = ?", (chat_id,))
+            db.commit()
+        except Exception as e:
+            logger.debug("Could not delete persisted session: %s", e)
 
     def _has_existing_claude_session(self, cwd: str) -> bool:
         """Check if Claude CLI has existing session files for this CWD."""
@@ -72,6 +124,7 @@ class SessionManager:
                 session = GatewaySession(chat_id=chat_id, cwd=cwd)
                 session.first_done = self._has_existing_claude_session(cwd)
                 self._sessions[chat_id] = session
+                self._persist_session(session)
                 logger.info(
                     "Created session chat_id=%s cwd=%s first_done=%s",
                     chat_id, cwd, session.first_done,
@@ -139,6 +192,7 @@ class SessionManager:
             with session.lock:
                 session.first_done = True
                 session.last_active = time.time()
+            self._persist_session(session)
 
             if proc.returncode != 0 and stderr:
                 return f"[ERROR] {stderr.strip()}"
@@ -160,6 +214,7 @@ class SessionManager:
                 return False
 
         self._cleanup_session_files(session)
+        self._delete_persisted_session(chat_id)
         logger.info("Stopped session chat_id=%s", chat_id)
         return True
 
@@ -205,9 +260,10 @@ class SessionManager:
             for chat_id in to_remove:
                 removed_sessions.append(self._sessions.pop(chat_id))
                 logger.info("Cleaned up idle session chat_id=%s", chat_id)
-        # Clean up files outside the lock
+        # Clean up files and DB outside the lock
         for session in removed_sessions:
             self._cleanup_session_files(session)
+            self._delete_persisted_session(session.chat_id)
 
     def _recover_stuck_sessions(self):
         """Auto-recover sessions stuck in busy state beyond the timeout."""

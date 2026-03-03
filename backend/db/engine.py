@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite_vec
 
 from backend.config import DATABASE_PATH, EMBEDDING_DIM
+from backend.db.migrations import run_migrations
 
 _connection: sqlite3.Connection | None = None
 
@@ -51,6 +52,7 @@ def _init_tables(db: sqlite3.Connection) -> None:
             enabled INTEGER DEFAULT 1,
             last_run_at TIMESTAMP,
             last_result TEXT,
+            timezone TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -86,9 +88,7 @@ def _init_tables(db: sqlite3.Connection) -> None:
             )
         """)
 
-    # Migration: add timezone column if missing
-    cols = [r[1] for r in db.execute("PRAGMA table_info(cron_jobs)").fetchall()]
-    if "timezone" not in cols:
-        db.execute("ALTER TABLE cron_jobs ADD COLUMN timezone TEXT")
-
     db.commit()
+
+    # Run versioned migrations (handles timezone column and new tables)
+    run_migrations(db)

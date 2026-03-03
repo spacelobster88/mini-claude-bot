@@ -92,3 +92,13 @@ def trigger_job(job_id: int):
         raise HTTPException(404, "Job not found")
     result = run_job_now(job_id)
     return {"result": result}
+
+
+@router.get("/{job_id}/history")
+def get_job_history(job_id: int, limit: int = 20):
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM cron_job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT ?",
+        (job_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]

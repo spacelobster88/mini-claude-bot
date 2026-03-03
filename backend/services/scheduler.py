@@ -45,7 +45,7 @@ def _execute_job(job_id: int) -> None:
         return
 
     job = dict(row)
-    now = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
 
     try:
         if job["job_type"] == "shell":
@@ -75,9 +75,20 @@ def _execute_job(job_id: int) -> None:
     except Exception as e:
         output = f"ERROR: {e}"
 
+    finished_at = datetime.now(timezone.utc).isoformat()
+    success = 0 if output.startswith("ERROR:") else 1
+    truncated = output[:10000]
+
+    # Update last_result on the job itself
     db.execute(
         "UPDATE cron_jobs SET last_run_at = ?, last_result = ?, updated_at = ? WHERE id = ?",
-        (now, output[:10000], now, job_id),
+        (finished_at, truncated, finished_at, job_id),
+    )
+    # Insert execution history
+    db.execute(
+        """INSERT INTO cron_job_runs (job_id, started_at, finished_at, result, success)
+           VALUES (?, ?, ?, ?, ?)""",
+        (job_id, started_at, finished_at, truncated, success),
     )
     db.commit()
 
