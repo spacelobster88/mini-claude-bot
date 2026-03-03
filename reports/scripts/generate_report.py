@@ -8,11 +8,11 @@ Usage:
     python generate_report.py --lang en   # English report
 """
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -194,35 +194,38 @@ def compile_pdf(tex_path: Path, output_dir: Path) -> Path:
     return pdf_path
 
 
+SEND_QUEUE = SCRIPT_DIR.parent / "output" / "pending_email.json"
+SEND_JXA = SCRIPT_DIR / "send_email.js"
+
+
 def send_email(to: str, cc: str, bcc: str, subject: str, body: str, attachment: str) -> None:
-    """Send email via macOS Mail.app with PDF attachment."""
-    # Build recipient blocks
-    to_block = f'''make new to recipient at end of to recipients with properties {{address:"{to}"}}'''
-    cc_block = f'''make new cc recipient at end of cc recipients with properties {{address:"{cc}"}}''' if cc else ""
-    bcc_block = f'''make new bcc recipient at end of bcc recipients with properties {{address:"{bcc}"}}''' if bcc else ""
+    """Send email via Mail.app using JXA (JavaScript for Automation).
 
-    # Escape body for AppleScript
-    as_body = body.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    Writes email params to a JSON queue file, then runs the JXA script
+    via osascript. The JXA script reads the queue, sends via Mail.app,
+    and deletes the queue file on success.
+    """
+    params = {
+        "sender": SENDER,
+        "to": to,
+        "cc": cc,
+        "bcc": bcc,
+        "subject": subject,
+        "body": body,
+        "attachment": attachment,
+    }
+    SEND_QUEUE.write_text(json.dumps(params, ensure_ascii=False))
 
-    script = f'''
-tell application "Mail"
-    activate
-    delay 1
-    set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{as_body}", visible:true, sender:"{SENDER}"}}
-    tell newMsg
-        {to_block}
-        {cc_block}
-        {bcc_block}
-        make new attachment with properties {{file name:POSIX file "{attachment}"}} at after the last paragraph
-    end tell
-    delay 3
-    send newMsg
-    delay 3
-end tell
-'''
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", str(SEND_JXA)],
+        capture_output=True, text=True, timeout=120,
+    )
+
     if result.returncode != 0:
-        print(f"Mail send error: {result.stderr}", file=sys.stderr)
+        print(f"Email send failed: {result.stderr}", file=sys.stderr)
+        print("Queue file preserved for manual retry: " + str(SEND_QUEUE), file=sys.stderr)
+    elif SEND_QUEUE.exists():
+        print("Email may not have been sent (queue file still exists)", file=sys.stderr)
     else:
         print(f"Email sent to {to}" + (f", cc {cc}" if cc else "") + (f", bcc {bcc}" if bcc else ""))
 
