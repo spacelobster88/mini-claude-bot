@@ -18,6 +18,8 @@ def get_db() -> sqlite3.Connection:
     if _connection is None:
         Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
         _connection = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+        _connection.execute("PRAGMA journal_mode=WAL")
+        _connection.execute("PRAGMA busy_timeout=5000")
         _connection.row_factory = sqlite3.Row
         _connection.enable_load_extension(True)
         sqlite_vec.load(_connection)

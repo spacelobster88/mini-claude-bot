@@ -56,11 +56,13 @@ async def gateway_send(req: SendRequest) -> SendResponse:
     # Send to Claude (blocking → offload to threadpool)
     response = await asyncio.to_thread(manager.send, req.chat_id, req.message)
 
-    # Store assistant response
+    # Store assistant response (mark errors distinctly)
+    is_error = response.startswith("[ERROR]") or response.startswith("[BUSY]")
+    source = "error" if is_error else "telegram"
     cursor = db.execute(
         """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
            VALUES (?, ?, ?, ?, ?)""",
-        (session_id, "assistant", response, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+        (session_id, "assistant", response, source, int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
     )
     db.commit()
     assistant_msg_id = cursor.lastrowid
@@ -98,7 +100,7 @@ def gateway_reset_session(chat_id: str):
     session_dir = Path("/tmp/claude-gateway-sessions") / chat_id
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
-    claude_session_dir = Path.home() / ".claude" / "projects" / session_dir.name.replace("/", "-")
+    claude_session_dir = Path.home() / ".claude" / "projects" / str(session_dir).replace("/", "-")
     if claude_session_dir.exists():
         shutil.rmtree(str(claude_session_dir), ignore_errors=True)
     return {"reset": True, "chat_id": chat_id}

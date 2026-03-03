@@ -1,6 +1,7 @@
 """E2E tests for the gateway: multi-chat concurrency, isolation, resume."""
 
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +10,15 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.services.scheduler import scheduler
 from backend.services import session_manager as sm_mod
+
+
+def _mock_popen(stdout="ok", stderr="", returncode=0):
+    """Create a mock Popen that returns the given stdout/stderr via communicate()."""
+    proc = MagicMock()
+    proc.communicate.return_value = (stdout, stderr)
+    proc.returncode = returncode
+    proc.pid = 12345
+    return proc
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +44,10 @@ def client():
 
 # ── Concurrent multi-chat ────────────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_two_chats_concurrent(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_two_chats_concurrent(mock_popen, client):
     """Two different chats can send messages and both get responses."""
-    mock_run.return_value = MagicMock(returncode=0, stdout="reply", stderr="")
+    mock_popen.return_value = _mock_popen(stdout="reply")
 
     r1 = client.post("/api/gateway/send", json={"chat_id": "chat_a", "message": "hello from A"})
     r2 = client.post("/api/gateway/send", json={"chat_id": "chat_b", "message": "hello from B"})
@@ -54,16 +64,16 @@ def test_two_chats_concurrent(mock_run, client):
     assert s2[0]["content"] == "hello from B"
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_context_isolation(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_context_isolation(mock_popen, client):
     """Each chat gets --continue only for its own session, not others."""
     call_args = []
 
-    def capture_run(*args, **kwargs):
+    def capture_popen(*args, **kwargs):
         call_args.append((args, kwargs))
-        return MagicMock(returncode=0, stdout="ok", stderr="")
+        return _mock_popen()
 
-    mock_run.side_effect = capture_run
+    mock_popen.side_effect = capture_popen
 
     # Chat A: first message (no --continue), second message (--continue)
     client.post("/api/gateway/send", json={"chat_id": "iso_a", "message": "a1"})
@@ -84,19 +94,17 @@ def test_context_isolation(mock_run, client):
 
 # ── Busy handling ────────────────────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_busy_returns_immediately(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_busy_returns_immediately(mock_popen, client):
     """When a chat is busy, second message gets [BUSY] response."""
-    import time
-
     barrier = threading.Barrier(2, timeout=5)
 
-    def slow_run(*args, **kwargs):
+    def slow_popen(*args, **kwargs):
         barrier.wait()  # wait for both threads to be running
         time.sleep(0.5)
-        return MagicMock(returncode=0, stdout="slow reply", stderr="")
+        return _mock_popen(stdout="slow reply")
 
-    mock_run.side_effect = slow_run
+    mock_popen.side_effect = slow_popen
 
     results = {}
 
@@ -120,10 +128,10 @@ def test_busy_returns_immediately(mock_run, client):
 
 # ── Stop isolation ───────────────────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_stop_one_chat_doesnt_affect_other(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_stop_one_chat_doesnt_affect_other(mock_popen, client):
     """Stopping one chat leaves other chats unaffected."""
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+    mock_popen.return_value = _mock_popen()
 
     client.post("/api/gateway/send", json={"chat_id": "keep", "message": "hi"})
     client.post("/api/gateway/send", json={"chat_id": "remove", "message": "hi"})
@@ -138,14 +146,14 @@ def test_stop_one_chat_doesnt_affect_other(mock_run, client):
 
 # ── Session resume after restart ─────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_session_resume_after_manager_reset(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_session_resume_after_manager_reset(mock_popen, client):
     """After manager reset, existing JSONL triggers --continue."""
     import os
     import shutil
     from pathlib import Path
 
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+    mock_popen.return_value = _mock_popen()
 
     # Send first message to establish session
     client.post("/api/gateway/send", json={"chat_id": "resume_test", "message": "first"})
@@ -166,29 +174,34 @@ def test_session_resume_after_manager_reset(mock_run, client):
         sm_mod._manager = None
 
         # Send another message — should detect existing JSONL and use --continue
-        mock_run.reset_mock()
-        mock_run.return_value = MagicMock(returncode=0, stdout="resumed", stderr="")
+        call_args = []
+
+        def capture_popen(*args, **kwargs):
+            call_args.append((args, kwargs))
+            return _mock_popen(stdout="resumed")
+
+        mock_popen.side_effect = capture_popen
         r = client.post("/api/gateway/send", json={"chat_id": "resume_test", "message": "after restart"})
 
         assert r.json()["response"] == "resumed"
         # The call should have --continue because JSONL exists
-        assert "--continue" in mock_run.call_args[0][0]
+        assert "--continue" in call_args[0][0][0]
     finally:
         shutil.rmtree(str(session_dir), ignore_errors=True)
 
 
 # ── Group chat: same chat_id from different users ────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_group_chat_shared_context(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_group_chat_shared_context(mock_popen, client):
     """Multiple users in same group (same chat_id) share one session."""
     call_args = []
 
-    def capture_run(*args, **kwargs):
+    def capture_popen(*args, **kwargs):
         call_args.append((args, kwargs))
-        return MagicMock(returncode=0, stdout="ok", stderr="")
+        return _mock_popen()
 
-    mock_run.side_effect = capture_run
+    mock_popen.side_effect = capture_popen
 
     # User A sends to group
     client.post("/api/gateway/send", json={

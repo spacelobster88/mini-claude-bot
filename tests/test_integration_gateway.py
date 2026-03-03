@@ -10,6 +10,15 @@ from backend.services.scheduler import scheduler
 from backend.services import session_manager as sm_mod
 
 
+def _mock_popen(stdout="ok", stderr="", returncode=0):
+    """Create a mock Popen that returns the given stdout/stderr via communicate()."""
+    proc = MagicMock()
+    proc.communicate.return_value = (stdout, stderr)
+    proc.returncode = returncode
+    proc.pid = 12345
+    return proc
+
+
 @pytest.fixture(autouse=True)
 def stop_scheduler():
     yield
@@ -34,9 +43,9 @@ def client():
 
 # ── POST /api/gateway/send ───────────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_send_returns_response(mock_run, client):
-    mock_run.return_value = MagicMock(returncode=0, stdout="Hello from Claude!", stderr="")
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_returns_response(mock_popen, client):
+    mock_popen.return_value = _mock_popen(stdout="Hello from Claude!")
 
     r = client.post("/api/gateway/send", json={
         "chat_id": "12345",
@@ -48,9 +57,9 @@ def test_send_returns_response(mock_run, client):
     assert data["session_key"] == "12345"
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_send_stores_messages_in_db(mock_run, client):
-    mock_run.return_value = MagicMock(returncode=0, stdout="response text", stderr="")
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_stores_messages_in_db(mock_popen, client):
+    mock_popen.return_value = _mock_popen(stdout="response text")
 
     client.post("/api/gateway/send", json={
         "chat_id": "67890",
@@ -69,9 +78,9 @@ def test_send_stores_messages_in_db(mock_run, client):
     assert msgs[1]["content"] == "response text"
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_send_stores_telegram_chat_id(mock_run, client):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_stores_telegram_chat_id(mock_popen, client):
+    mock_popen.return_value = _mock_popen()
 
     client.post("/api/gateway/send", json={
         "chat_id": "99999",
@@ -83,10 +92,10 @@ def test_send_stores_telegram_chat_id(mock_run, client):
     assert msgs[0]["telegram_chat_id"] == 99999
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_send_with_optional_fields(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_with_optional_fields(mock_popen, client):
     """user_id and username are optional audit fields."""
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+    mock_popen.return_value = _mock_popen()
 
     r = client.post("/api/gateway/send", json={
         "chat_id": "111",
@@ -97,10 +106,10 @@ def test_send_with_optional_fields(mock_run, client):
     assert r.status_code == 200
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_send_multiple_chats_isolated(mock_run, client):
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_multiple_chats_isolated(mock_popen, client):
     """Different chat_ids get separate DB sessions."""
-    mock_run.return_value = MagicMock(returncode=0, stdout="reply", stderr="")
+    mock_popen.return_value = _mock_popen(stdout="reply")
 
     client.post("/api/gateway/send", json={"chat_id": "aaa", "message": "msg1"})
     client.post("/api/gateway/send", json={"chat_id": "bbb", "message": "msg2"})
@@ -113,11 +122,25 @@ def test_send_multiple_chats_isolated(mock_run, client):
     assert r2.json()[0]["content"] == "msg2"
 
 
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_send_error_marked_with_source(mock_popen, client):
+    """Error responses from Claude should be stored with source='error'."""
+    mock_popen.return_value = _mock_popen(returncode=1, stdout="", stderr="something broke")
+
+    client.post("/api/gateway/send", json={"chat_id": "err_test", "message": "hi"})
+
+    r = client.get("/api/chat/sessions/gw-err_test")
+    msgs = r.json()
+    assistant_msg = msgs[1]
+    assert "[ERROR]" in assistant_msg["content"]
+    assert assistant_msg["source"] == "error"
+
+
 # ── POST /api/gateway/stop ──────────────────────────────────────
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_stop_existing_session(mock_run, client):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_stop_existing_session(mock_popen, client):
+    mock_popen.return_value = _mock_popen()
     client.post("/api/gateway/send", json={"chat_id": "to_stop", "message": "hi"})
 
     r = client.post("/api/gateway/stop", json={"chat_id": "to_stop"})
@@ -139,9 +162,9 @@ def test_list_sessions_empty(client):
     assert r.json() == []
 
 
-@patch("backend.services.session_manager.subprocess.run")
-def test_list_sessions_with_active(mock_run, client):
-    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+@patch("backend.services.session_manager.subprocess.Popen")
+def test_list_sessions_with_active(mock_popen, client):
+    mock_popen.return_value = _mock_popen()
     client.post("/api/gateway/send", json={"chat_id": "chat_x", "message": "hi"})
 
     r = client.get("/api/gateway/sessions")
@@ -151,3 +174,4 @@ def test_list_sessions_with_active(mock_run, client):
     assert sessions[0]["first_done"] is True
     assert sessions[0]["busy"] is False
     assert "idle_seconds" in sessions[0]
+    assert "busy_seconds" in sessions[0]

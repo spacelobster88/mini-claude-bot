@@ -1,4 +1,4 @@
-import asyncio
+import os
 import subprocess
 from datetime import datetime, timezone
 
@@ -6,6 +6,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from backend.db.engine import get_db
+
+SHELL_JOB_TIMEOUT = int(os.getenv("CRON_SHELL_TIMEOUT", "900"))
+CLAUDE_JOB_TIMEOUT = int(os.getenv("CRON_CLAUDE_TIMEOUT", "900"))
 
 scheduler = BackgroundScheduler()
 
@@ -51,15 +54,18 @@ def _execute_job(job_id: int) -> None:
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=900,
+                timeout=SHELL_JOB_TIMEOUT,
             )
             output = result.stdout or result.stderr
         elif job["job_type"] == "claude":
+            # Strip CLAUDECODE env to avoid "nested session" error
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             result = subprocess.run(
                 ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "text", job["command"]],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=CLAUDE_JOB_TIMEOUT,
+                env=env,
             )
             output = result.stdout or result.stderr
         else:
