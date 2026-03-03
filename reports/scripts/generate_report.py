@@ -224,10 +224,29 @@ def send_email(to: str, cc: str, bcc: str, subject: str, body: str, attachment: 
     if result.returncode != 0:
         print(f"Email send failed: {result.stderr}", file=sys.stderr)
         print("Queue file preserved for manual retry: " + str(SEND_QUEUE), file=sys.stderr)
+        _notify_failure(f"邮件发送失败 ({to}): {result.stderr[:200]}")
     elif SEND_QUEUE.exists():
         print("Email may not have been sent (queue file still exists)", file=sys.stderr)
+        _notify_failure(f"邮件可能未发送 ({to}): queue 文件仍存在")
     else:
         print(f"Email sent to {to}" + (f", cc {cc}" if cc else "") + (f", bcc {bcc}" if bcc else ""))
+
+
+TELEGRAM_BOT_TOKEN = "8640999049:AAFhaP7s2zcSCNO9RI4ev1fpRSVwNsCmSak"
+TELEGRAM_CHAT_ID = "6838572051"
+
+
+def _notify_failure(msg: str) -> None:
+    """Send failure notification via Telegram."""
+    try:
+        import urllib.request
+        import urllib.parse
+        text = f"⚠️ Report Email Error\n\n{msg}\n\n手动补发: osascript -l JavaScript reports/scripts/send_email.js"
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
+        urllib.request.urlopen(url, data, timeout=10)
+    except Exception:
+        pass
 
 
 def generate_chinese_report(preview: bool = False):
