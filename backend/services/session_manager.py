@@ -205,6 +205,7 @@ class SessionManager:
             with session.lock:
                 session.busy = False
                 session.busy_since = 0.0
+            self._persist_session(session)
 
     def stop_session(self, chat_id: str) -> bool:
         """Stop and clean up a session."""
