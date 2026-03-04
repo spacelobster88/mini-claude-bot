@@ -16,7 +16,7 @@ scheduler = BackgroundScheduler()
 def start_scheduler() -> None:
     """Load all enabled jobs from DB and start the scheduler."""
     db = get_db()
-    rows = db.execute("SELECT * FROM cron_jobs WHERE enabled = 1").fetchall()
+    rows = db.execute("SELECT id, name, cron_expression, command, job_type, enabled, last_run_at, last_result, created_at, updated_at, timezone FROM cron_jobs WHERE enabled = 1").fetchall()
     for row in rows:
         _add_job_to_scheduler(dict(row))
     scheduler.start()

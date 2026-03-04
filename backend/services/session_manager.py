@@ -21,6 +21,17 @@ SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-session
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "900"))  # 15 minutes
 BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "300"))  # 5 minutes (was 30m, too long)
+QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "1800"))  # max 30min wait in queue
+
+# Messages matching these patterns get no timeout (they can run for hours)
+NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
+
+
+def _make_set_event() -> threading.Event:
+    """Create an Event that starts in the 'set' (ready) state."""
+    e = threading.Event()
+    e.set()
+    return e
 
 
 @dataclass
@@ -33,6 +44,7 @@ class GatewaySession:
     last_active: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
     _proc: subprocess.Popen | None = field(default=None, repr=False)
+    _ready: threading.Event = field(default_factory=lambda: _make_set_event())
 
 
 class SessionManager:
@@ -181,9 +193,23 @@ class SessionManager:
         except subprocess.TimeoutExpired:
             logger.error("Process %d did not die after SIGKILL", proc.pid)
 
+    @staticmethod
+    def _is_no_timeout_message(message: str) -> bool:
+        """Check if message should run without timeout (e.g. harness loops)."""
+        msg_lower = message.lower()
+        return any(p in msg_lower for p in NO_TIMEOUT_PATTERNS)
+
     def send(self, chat_id: str, message: str) -> str:
-        """Send a message to Claude CLI for the given chat. Blocking call."""
+        """Send a message to Claude CLI for the given chat. Blocking call.
+
+        If the session is busy, queues and waits (up to QUEUE_WAIT_TIMEOUT)
+        instead of immediately rejecting.
+        """
         session = self._get_or_create(chat_id)
+
+        # Wait for the session to become free (queue instead of reject)
+        if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
+            return "[BUSY] Timed out waiting in queue. The previous message is still processing."
 
         with session.lock:
             if session.busy:
@@ -194,15 +220,16 @@ class SessionManager:
                         "Session chat_id=%s stuck busy for %ds, force-resetting",
                         chat_id, int(stuck_duration),
                     )
-                    # Kill any lingering process
                     if session._proc and session._proc.poll() is None:
                         self._kill_process(session._proc)
                         session._proc = None
                     session.busy = False
                 else:
+                    # Another queued message grabbed the slot first, re-wait briefly
                     return "[BUSY] Still processing the previous message, please wait."
             session.busy = True
             session.busy_since = time.time()
+            session._ready.clear()  # signal other waiters: session is busy
 
         try:
             args = [
@@ -231,11 +258,17 @@ class SessionManager:
             with session.lock:
                 session._proc = proc
 
+            # No timeout for harness loops / long-running tasks
+            timeout = None if self._is_no_timeout_message(message) else CLAUDE_TIMEOUT
+            if timeout is None:
+                logger.info("chat_id=%s: no timeout (long-running message detected)", chat_id)
+
             try:
-                stdout, stderr = proc.communicate(timeout=CLAUDE_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self._kill_process(proc)
-                return f"[ERROR] Claude timed out after {CLAUDE_TIMEOUT}s"
+                # On timeout, return clear error message
+                return f"[ERROR] Claude timed out after {CLAUDE_TIMEOUT}s (harness loop may have been interrupted)"
 
             with session.lock:
                 session.first_done = True
@@ -243,10 +276,25 @@ class SessionManager:
                 session._proc = None
             self._persist_session(session)
 
-            if proc.returncode != 0 and stderr:
-                return f"[ERROR] {stderr.strip()}"
+            # Fix: always log stderr, even on exit 0 (helps debugging)
+            if stderr and stderr.strip():
+                logger.info("chat_id=%s stderr (rc=%d): %s", chat_id, proc.returncode, stderr.strip()[:500])
 
-            return stdout.strip() or "(empty response)"
+            if proc.returncode != 0:
+                if stderr:
+                    return f"[ERROR] {stderr.strip()}"
+                else:
+                    return f"[ERROR] Claude exited with code {proc.returncode} but no stderr output"
+
+            # If stdout is empty, it's likely a tool-only call
+            # Return a descriptive message instead of generic "(empty response)"
+            if not stdout.strip():
+                if stderr:
+                    return f"Executed (no text output)\nstderr: {stderr.strip()[:200]}"
+                else:
+                    return "Executed (no text output - tool-only command)"
+
+            return stdout.strip()
 
         except Exception as e:
             return f"[ERROR] {e}"
@@ -257,6 +305,7 @@ class SessionManager:
                 if session._proc and session._proc.poll() is None:
                     self._kill_process(session._proc)
                 session._proc = None
+            session._ready.set()  # wake up any queued messages
             self._persist_session(session)
 
     def stop_session(self, chat_id: str) -> bool:
@@ -273,6 +322,7 @@ class SessionManager:
                 self._kill_process(session._proc)
                 session._proc = None
             session.busy = False
+        session._ready.set()  # wake up any queued messages
 
         self._cleanup_session_files(session)
         self._delete_persisted_session(chat_id)
@@ -345,6 +395,7 @@ class SessionManager:
                                 session._proc = None
                             session.busy = False
                             session.busy_since = 0.0
+                            session._ready.set()  # wake up any queued messages
 
 
 # Module-level singleton
