@@ -25,8 +25,42 @@ CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "900"))  # 15 minutes
 BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "300"))  # 5 minutes (was 30m, too long)
 QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "1800"))  # max 30min wait in queue
 
+# Memory guardrails
+MEMORY_MIN_FREE_MB = int(os.getenv("GATEWAY_MIN_FREE_MB", "512"))  # 512MB minimum free before spawning
+MEMORY_CHECK_INTERVAL = 10  # seconds between memory checks when waiting
+MEMORY_MAX_WAIT = 300  # max 5 minutes waiting for memory to free up
+MAX_OOM_RETRIES = 3  # max retries when Claude is killed by OOM (exit -15)
+OOM_RETRY_BACKOFF = 15  # base seconds between OOM retries (multiplied by attempt)
+
 # Messages matching these patterns get no timeout (they can run for hours)
 NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
+
+
+def _get_available_memory_mb() -> int:
+    """Get available memory in MB using macOS vm_stat.
+
+    Returns free + inactive pages converted to MB.
+    On error, returns a large number to avoid blocking.
+    """
+    try:
+        result = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=5
+        )
+        page_size = 16384  # macOS default (16KB pages on Apple Silicon)
+        free = 0
+        inactive = 0
+        purgeable = 0
+        for line in result.stdout.splitlines():
+            if "Pages free" in line:
+                free = int(line.split(":")[1].strip().rstrip("."))
+            elif "Pages inactive" in line:
+                inactive = int(line.split(":")[1].strip().rstrip("."))
+            elif "Pages purgeable" in line:
+                purgeable = int(line.split(":")[1].strip().rstrip("."))
+        available_bytes = (free + inactive + purgeable) * page_size
+        return available_bytes // (1024 * 1024)
+    except Exception:
+        return 9999  # assume plenty on error
 
 
 def _make_set_event() -> threading.Event:
@@ -56,7 +90,6 @@ class SessionManager:
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
-        self._current_harness_loops: int = 0  # Memory guard: track concurrent harness loops
         self._load_persisted_sessions()
 
     def _get_db(self):
@@ -203,11 +236,96 @@ class SessionManager:
         msg_lower = message.lower()
         return any(p in msg_lower for p in NO_TIMEOUT_PATTERNS)
 
+    def _wait_for_memory(self, chat_id: str) -> bool:
+        """Wait until enough memory is available before spawning Claude CLI.
+
+        Returns True if memory is sufficient, False if timed out waiting.
+        """
+        waited = 0
+        while waited < MEMORY_MAX_WAIT:
+            available = _get_available_memory_mb()
+            if available >= MEMORY_MIN_FREE_MB:
+                if waited > 0:
+                    logger.info(
+                        "chat_id=%s: Memory OK: %dMB available (waited %ds)",
+                        chat_id, available, waited,
+                    )
+                return True
+            logger.warning(
+                "chat_id=%s: Low memory: %dMB available (need %dMB). Waiting %ds...",
+                chat_id, available, MEMORY_MIN_FREE_MB, MEMORY_CHECK_INTERVAL,
+            )
+            time.sleep(MEMORY_CHECK_INTERVAL)
+            waited += MEMORY_CHECK_INTERVAL
+        logger.error(
+            "chat_id=%s: Timed out waiting for memory after %ds (%dMB available)",
+            chat_id, MEMORY_MAX_WAIT, _get_available_memory_mb(),
+        )
+        return False
+
+    def _run_claude_cli(self, session: GatewaySession, message: str, env: dict) -> tuple[int, str, str]:
+        """Run Claude CLI once and return (returncode, stdout, stderr).
+
+        Handles process lifecycle, timeout, and session state updates.
+        """
+        args = [
+            "claude", "-p",
+            "--disable-slash-commands",
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+        ]
+        if session.first_done:
+            args.append("--continue")
+        args.append(message)
+
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=session.cwd,
+            env=env,
+            start_new_session=True,
+        )
+
+        with session.lock:
+            session._proc = proc
+
+        timeout = None if self._is_no_timeout_message(message) else CLAUDE_TIMEOUT
+        if timeout is None:
+            logger.info("chat_id=%s: no timeout (long-running message detected)", session.chat_id)
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill_process(proc)
+            with session.lock:
+                session._proc = None
+            return (-999, "", f"Claude timed out after {CLAUDE_TIMEOUT}s")
+
+        with session.lock:
+            session.first_done = True
+            session.last_active = time.time()
+            session._proc = None
+        self._persist_session(session)
+
+        if stderr and stderr.strip():
+            logger.info(
+                "chat_id=%s stderr (rc=%d): %s",
+                session.chat_id, proc.returncode, stderr.strip()[:500],
+            )
+
+        return (proc.returncode, stdout.strip() if stdout else "", stderr.strip() if stderr else "")
+
     def send(self, chat_id: str, message: str) -> str:
         """Send a message to Claude CLI for the given chat. Blocking call.
 
         If the session is busy, queues and waits (up to QUEUE_WAIT_TIMEOUT)
         instead of immediately rejecting.
+
+        Memory guardrails:
+        - Waits for sufficient free memory before spawning Claude CLI
+        - On exit code -15 (SIGTERM / OOM kill), waits and retries automatically
         """
         session = self._get_or_create(chat_id)
 
@@ -229,125 +347,67 @@ class SessionManager:
                         session._proc = None
                     session.busy = False
                 else:
-                    # Another queued message grabbed the slot first, re-wait briefly
                     return "[BUSY] Still processing the previous message, please wait."
             session.busy = True
             session.busy_since = time.time()
-            session._ready.clear()  # signal other waiters: session is busy
+            session._ready.clear()
 
         try:
-            args = [
-                "claude", "-p",
-                "--disable-slash-commands",  # Disable Claude Code skills - let /harness pass through
-                "--output-format", "text",
-                "--dangerously-skip-permissions",
-            ]
-            if session.first_done:
-                args.append("--continue")
-            args.append(message)
-
             # Clean env: remove CLAUDECODE to avoid "nested session" error
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-            # Memory guard: check concurrent harness loops
-            is_harness_message = self._is_no_timeout_message(message)
-            if is_harness_message and self._current_harness_loops >= MAX_CONCURRENT_HARNESS_LOOPS:
-                logger.warning(
-                    "chat_id=%s: Maximum concurrent harness loops (%d) reached. "
-                    "Queueing message: %.50s",
-                    chat_id, MAX_CONCURRENT_HARNESS_LOOPS, message[:100]
-                )
-                # Return immediately without creating process
-                return f"[QUEUED] Harness loop limit reached. Try again later (max: {MAX_CONCURRENT_HARNESS_LOOPS})."
+            # Retry loop for OOM kills (exit code -15)
+            for attempt in range(MAX_OOM_RETRIES + 1):
+                # Memory guardrail: wait for sufficient free memory
+                if not self._wait_for_memory(chat_id):
+                    logger.warning(
+                        "chat_id=%s: Proceeding despite low memory (attempt %d)",
+                        chat_id, attempt + 1,
+                    )
 
-            # Increment counter for harness messages
-            if is_harness_message:
-                with self._global_lock:
-                    self._current_harness_loops += 1
+                returncode, stdout, stderr = self._run_claude_cli(session, message, env)
 
-            proc = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=session.cwd,
-                env=env,
-                start_new_session=True,  # own process group for clean kill
-            )
+                # Timeout sentinel
+                if returncode == -999:
+                    return f"[ERROR] {stderr}"
 
-            with session.lock:
-                session._proc = proc
+                # Success
+                if returncode == 0:
+                    return stdout if stdout else ""
 
-            # No timeout for harness loops / long-running tasks
-            timeout = None if self._is_no_timeout_message(message) else CLAUDE_TIMEOUT
-            if timeout is None:
-                logger.info("chat_id=%s: no timeout (long-running message detected)", chat_id)
+                # Exit -15 = SIGTERM (likely OOM kill by macOS)
+                if returncode == -15:
+                    if attempt < MAX_OOM_RETRIES:
+                        backoff = OOM_RETRY_BACKOFF * (attempt + 1)
+                        available = _get_available_memory_mb()
+                        logger.warning(
+                            "chat_id=%s: Claude killed (SIGTERM/-15, likely OOM). "
+                            "Memory: %dMB. Retry %d/%d in %ds...",
+                            chat_id, available, attempt + 1, MAX_OOM_RETRIES, backoff,
+                        )
+                        # Wait for memory to free up before retrying
+                        time.sleep(backoff)
+                        continue
+                    else:
+                        logger.error(
+                            "chat_id=%s: Claude killed (SIGTERM/-15) after %d retries. "
+                            "Memory: %dMB. Giving up.",
+                            chat_id, MAX_OOM_RETRIES, _get_available_memory_mb(),
+                        )
+                        return (
+                            f"[ERROR] Claude was killed by the system {MAX_OOM_RETRIES + 1} times "
+                            f"(likely out of memory). Available: {_get_available_memory_mb()}MB. "
+                            f"Try again when other processes have finished."
+                        )
 
-            try:
-                stdout, stderr = proc.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._kill_process(proc)
-                # On timeout, return clear error message
-                return f"[ERROR] Claude timed out after {CLAUDE_TIMEOUT}s (harness loop may have been interrupted)"
-
-            with session.lock:
-                session.first_done = True
-                session.last_active = time.time()
-                session._proc = None
-            self._persist_session(session)
-
-            # Fix: always log stderr, even on exit 0 (helps debugging)
-            if stderr and stderr.strip():
-                logger.info("chat_id=%s stderr (rc=%d): %s", chat_id, proc.returncode, stderr.strip()[:500])
-
-            # Fix: distinguish between tool execution and actual errors
-            # Code -15 is usually SIGTERM (normal termination)
-            # Code 0 is successful (even if no output - tools can be silent)
-            if proc.returncode == 0:
-                # Successful execution - return stdout exactly (empty is OK for tools)
-                return stdout.strip()
-            
-            # Code -15 is SIGTERM - may be normal shutdown
-            if proc.returncode == -15:
-                # Decrement harness loop counter (memory guard)
-                is_harness_message = self._is_no_timeout_message(message)
-                if is_harness_message:
-                    with self._global_lock:
-                        if self._current_harness_loops > 0:
-                            self._current_harness_loops -= 1
-                            logger.info("HARNESS COUNTER: Decremented to %d", self._current_harness_loops)
-                
+                # Other non-zero exit codes — not OOM, don't retry
                 if stderr:
-                    return f"[WARN] Process terminated (SIGTERM)\nstderr: {stderr.strip()[:200]}"
+                    return f"[ERROR] Claude exited with code {returncode}\nstderr: {stderr[:500]}"
                 else:
-                    return "[HARNESS] Process terminated (graceful shutdown). Session preserved."
-            
-            # Non-zero exit codes other than -15 are actual errors
-            if proc.returncode != 0:
-                error_prefix = "[ERROR]"
-                
-                # Check for specific error patterns
-                if stderr:
-                    stderr_lower = stderr.lower()
-                    # Known error patterns that are not actual failures
-                    known_patterns = [
-                        "nested session",  # benign, handled elsewhere
-                        "too many requests",  # rate limit, not a failure
-                        "context limit",  # benign limit
-                        "service unavailable",  # temporary
-                    ]
-                    
-                    if any(pattern in stderr_lower for pattern in known_patterns):
-                        error_prefix = "[WARN]"
-                    
-                    return f"{error_prefix} Claude exited with code {proc.returncode}\nstderr: {stderr.strip()[:500]}"
-                else:
-                    return f"[ERROR] Claude crashed with code {proc.returncode} (no stderr output)"
+                    return f"[ERROR] Claude exited with code {returncode} (no stderr output)"
 
-            # Return stdout exactly as-is (tool output may be empty)
-            # Tools like `ls`, `cat`, `pwd` may return empty stdout
-            # Empty stdout is SUCCESS, not an error
-            return stdout.strip()
+            # Should not reach here, but just in case
+            return "[ERROR] Unexpected state in send() retry loop"
 
         except Exception as e:
             return f"[ERROR] {e}"
@@ -358,7 +418,7 @@ class SessionManager:
                 if session._proc and session._proc.poll() is None:
                     self._kill_process(session._proc)
                 session._proc = None
-            session._ready.set()  # wake up any queued messages
+            session._ready.set()
             self._persist_session(session)
 
     def send_background(self, chat_id: str, message: str, bot_token: str) -> dict:
