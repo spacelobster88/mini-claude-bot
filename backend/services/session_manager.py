@@ -207,6 +207,7 @@ class SessionManager:
         try:
             args = [
                 "claude", "-p",
+                "--disable-slash-commands",  # Disable Claude Code skills - let /harness pass through
                 "--output-format", "text",
                 "--dangerously-skip-permissions",
             ]
