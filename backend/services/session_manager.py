@@ -5,7 +5,6 @@ Claude CLI uses CWD to determine the "project", so --continue
 only resumes the session for that specific CWD.
 """
 
-import glob
 import logging
 import os
 import signal
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-sessions")
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "900"))  # 15 minutes
-BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "1800"))  # 30 minutes
+BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "300"))  # 5 minutes (was 30m, too long)
 
 
 @dataclass
@@ -33,6 +32,7 @@ class GatewaySession:
     busy_since: float = 0.0
     last_active: float = field(default_factory=time.time)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    _proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
 class SessionManager:
@@ -47,6 +47,11 @@ class SessionManager:
         """Lazy import to avoid circular dependency."""
         from backend.db.engine import get_db
         return get_db()
+
+    def _get_write_lock(self):
+        """Get DB write lock for thread-safe writes."""
+        from backend.db.engine import db_write_lock
+        return db_write_lock()
 
     def _load_persisted_sessions(self):
         """Load sessions from DB on startup. Reset busy flags (stale from crash)."""
@@ -71,37 +76,47 @@ class SessionManager:
             logger.debug("Could not load persisted sessions: %s", e)
 
     def _persist_session(self, session: GatewaySession) -> None:
-        """Write session state to DB (upsert)."""
+        """Write session state to DB (upsert). Thread-safe."""
         try:
             db = self._get_db()
-            db.execute(
-                """INSERT OR REPLACE INTO gateway_sessions
-                   (chat_id, cwd, first_done, busy, last_active)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (session.chat_id, session.cwd, int(session.first_done),
-                 int(session.busy), session.last_active),
-            )
-            db.commit()
+            with self._get_write_lock():
+                db.execute(
+                    """INSERT OR REPLACE INTO gateway_sessions
+                       (chat_id, cwd, first_done, busy, last_active)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (session.chat_id, session.cwd, int(session.first_done),
+                     int(session.busy), session.last_active),
+                )
+                db.commit()
         except Exception as e:
             logger.debug("Could not persist session: %s", e)
 
     def _delete_persisted_session(self, chat_id: str) -> None:
-        """Remove session from DB."""
+        """Remove session from DB. Thread-safe."""
         try:
             db = self._get_db()
-            db.execute("DELETE FROM gateway_sessions WHERE chat_id = ?", (chat_id,))
-            db.commit()
+            with self._get_write_lock():
+                db.execute("DELETE FROM gateway_sessions WHERE chat_id = ?", (chat_id,))
+                db.commit()
         except Exception as e:
             logger.debug("Could not delete persisted session: %s", e)
 
     def _has_existing_claude_session(self, cwd: str) -> bool:
         """Check if Claude CLI has existing session files for this CWD."""
-        # Claude mangles CWD path: /tmp/foo/bar → -tmp-foo-bar
-        mangled = cwd.replace("/", "-")
+        mangled = self._mangle_cwd(cwd)
         session_dir = Path.home() / ".claude" / "projects" / mangled
         if session_dir.exists():
             return len(list(session_dir.glob("*.jsonl"))) > 0
         return False
+
+    @staticmethod
+    def _mangle_cwd(cwd: str) -> str:
+        """Convert CWD to Claude CLI's mangled project dir name.
+
+        Claude CLI resolves symlinks, so /tmp → /private/tmp on macOS.
+        """
+        resolved = str(Path(cwd).resolve())
+        return resolved.replace("/", "-")
 
     def _cleanup_session_files(self, session: GatewaySession) -> None:
         """Clean up CWD directory and Claude CLI session files."""
@@ -109,7 +124,7 @@ class SessionManager:
             shutil.rmtree(session.cwd, ignore_errors=True)
         except Exception:
             pass
-        mangled = session.cwd.replace("/", "-")
+        mangled = self._mangle_cwd(session.cwd)
         session_dir = Path.home() / ".claude" / "projects" / mangled
         try:
             shutil.rmtree(str(session_dir), ignore_errors=True)
@@ -131,6 +146,41 @@ class SessionManager:
                 )
             return self._sessions[chat_id]
 
+    def _kill_process(self, proc: subprocess.Popen) -> None:
+        """Forcefully kill a subprocess and all its children."""
+        # 1. SIGTERM the process group (graceful)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        # 2. Brief wait for graceful shutdown
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        # 3. SIGKILL the process group (force)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        # 4. Close pipes to unblock communicate() in case children hold them
+        for pipe in (proc.stdout, proc.stderr, proc.stdin):
+            if pipe:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+        # 5. Final wait (non-blocking to avoid deadlock)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.error("Process %d did not die after SIGKILL", proc.pid)
+
     def send(self, chat_id: str, message: str) -> str:
         """Send a message to Claude CLI for the given chat. Blocking call."""
         session = self._get_or_create(chat_id)
@@ -144,6 +194,10 @@ class SessionManager:
                         "Session chat_id=%s stuck busy for %ds, force-resetting",
                         chat_id, int(stuck_duration),
                     )
+                    # Kill any lingering process
+                    if session._proc and session._proc.poll() is None:
+                        self._kill_process(session._proc)
+                        session._proc = None
                     session.busy = False
                 else:
                     return "[BUSY] Still processing the previous message, please wait."
@@ -163,7 +217,6 @@ class SessionManager:
             # Clean env: remove CLAUDECODE to avoid "nested session" error
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-            # Use Popen instead of run() to ensure proper cleanup on timeout
             proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
@@ -174,24 +227,19 @@ class SessionManager:
                 start_new_session=True,  # own process group for clean kill
             )
 
+            with session.lock:
+                session._proc = proc
+
             try:
                 stdout, stderr = proc.communicate(timeout=CLAUDE_TIMEOUT)
             except subprocess.TimeoutExpired:
-                # Kill the entire process group to avoid zombie children
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except OSError:
-                    pass
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-                proc.wait(timeout=10)
+                self._kill_process(proc)
                 return f"[ERROR] Claude timed out after {CLAUDE_TIMEOUT}s"
 
             with session.lock:
                 session.first_done = True
                 session.last_active = time.time()
+                session._proc = None
             self._persist_session(session)
 
             if proc.returncode != 0 and stderr:
@@ -205,14 +253,25 @@ class SessionManager:
             with session.lock:
                 session.busy = False
                 session.busy_since = 0.0
+                if session._proc and session._proc.poll() is None:
+                    self._kill_process(session._proc)
+                session._proc = None
             self._persist_session(session)
 
     def stop_session(self, chat_id: str) -> bool:
-        """Stop and clean up a session."""
+        """Stop and clean up a session, killing any running process."""
         with self._global_lock:
             session = self._sessions.pop(chat_id, None)
             if session is None:
                 return False
+
+        # Kill any running Claude CLI process
+        with session.lock:
+            if session._proc and session._proc.poll() is None:
+                logger.info("Killing running process for chat_id=%s", chat_id)
+                self._kill_process(session._proc)
+                session._proc = None
+            session.busy = False
 
         self._cleanup_session_files(session)
         self._delete_persisted_session(chat_id)
@@ -246,7 +305,7 @@ class SessionManager:
 
     def _cleanup_loop(self):
         while self._running:
-            time.sleep(300)  # check every 5 minutes
+            time.sleep(60)  # check every minute (was 5min, too slow for stuck recovery)
             self._cleanup_idle()
             self._recover_stuck_sessions()
 
@@ -279,6 +338,10 @@ class SessionManager:
                                 "Auto-recovering stuck session chat_id=%s (busy for %ds)",
                                 chat_id, int(stuck_duration),
                             )
+                            # Kill any lingering process
+                            if session._proc and session._proc.poll() is None:
+                                self._kill_process(session._proc)
+                                session._proc = None
                             session.busy = False
                             session.busy_since = 0.0
 

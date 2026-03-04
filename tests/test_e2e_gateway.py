@@ -195,6 +195,8 @@ def test_session_resume_after_manager_reset(mock_popen, client):
 @patch("backend.services.session_manager.subprocess.Popen")
 def test_group_chat_shared_context(mock_popen, client):
     """Multiple users in same group (same chat_id) share one session."""
+    # Use a unique chat_id that won't have leftover JSONL from real sessions
+    group_id = "-999000111"
     call_args = []
 
     def capture_popen(*args, **kwargs):
@@ -205,7 +207,7 @@ def test_group_chat_shared_context(mock_popen, client):
 
     # User A sends to group
     client.post("/api/gateway/send", json={
-        "chat_id": "-100999",
+        "chat_id": group_id,
         "message": "user A says hi",
         "user_id": "111",
         "username": "alice",
@@ -213,7 +215,7 @@ def test_group_chat_shared_context(mock_popen, client):
 
     # User B sends to same group
     client.post("/api/gateway/send", json={
-        "chat_id": "-100999",
+        "chat_id": group_id,
         "message": "user B says hello",
         "user_id": "222",
         "username": "bob",
@@ -227,5 +229,5 @@ def test_group_chat_shared_context(mock_popen, client):
     assert call_args[0][1]["cwd"] == call_args[1][1]["cwd"]
 
     # Both messages in same DB session
-    msgs = client.get("/api/chat/sessions/gw--100999").json()
+    msgs = client.get(f"/api/chat/sessions/gw-{group_id}").json()
     assert len(msgs) == 4  # 2 user + 2 assistant

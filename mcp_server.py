@@ -8,39 +8,51 @@ mcp = FastMCP("mini-claude-bot")
 
 API_BASE = os.getenv("MCB_API_BASE", "http://localhost:8000/api")
 DEFAULT_TIMEOUT = int(os.getenv("MCB_MCP_TIMEOUT", "30"))
-GATEWAY_TIMEOUT = int(os.getenv("MCB_GATEWAY_TIMEOUT", "360"))
+GATEWAY_TIMEOUT = int(os.getenv("MCB_GATEWAY_TIMEOUT", "960"))  # 16min, exceeds CLAUDE_TIMEOUT (15min)
+
+
+def _request(method: str, path: str, timeout: int = DEFAULT_TIMEOUT, **kwargs) -> dict | list:
+    try:
+        r = httpx.request(method, f"{API_BASE}{path}", timeout=timeout, **kwargs)
+        r.raise_for_status()
+        return r.json()
+    except httpx.ConnectError:
+        return {"error": f"Cannot connect to backend at {API_BASE}. Is it running?"}
+    except httpx.TimeoutException:
+        return {"error": f"Request to {path} timed out after {timeout}s"}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP {e.response.status_code}: {e.response.text[:500]}"}
 
 
 def _get(path: str, params: dict | None = None) -> dict | list:
-    r = httpx.get(f"{API_BASE}{path}", params=params, timeout=DEFAULT_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    return _request("GET", path, params=params)
 
 
 def _post(path: str, json: dict | None = None) -> dict:
-    r = httpx.post(f"{API_BASE}{path}", json=json, timeout=DEFAULT_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    return _request("POST", path, json=json)
 
 
 def _put(path: str, json: dict) -> dict:
-    r = httpx.put(f"{API_BASE}{path}", json=json, timeout=DEFAULT_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    return _request("PUT", path, json=json)
 
 
 def _delete(path: str) -> dict:
-    r = httpx.delete(f"{API_BASE}{path}", timeout=DEFAULT_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    return _request("DELETE", path)
 
 
 async def _post_gateway_async(path: str, json: dict | None = None) -> dict:
     """Async POST for long-running gateway operations."""
-    async with httpx.AsyncClient() as client:
-        r = await client.post(f"{API_BASE}{path}", json=json, timeout=GATEWAY_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(f"{API_BASE}{path}", json=json, timeout=GATEWAY_TIMEOUT)
+            r.raise_for_status()
+            return r.json()
+    except httpx.ConnectError:
+        return {"error": f"Cannot connect to backend at {API_BASE}. Is it running?"}
+    except httpx.TimeoutException:
+        return {"error": f"Gateway request timed out after {GATEWAY_TIMEOUT}s"}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP {e.response.status_code}: {e.response.text[:500]}"}
 
 
 # ── Health ────────────────────────────────────────────────────
@@ -226,6 +238,22 @@ def search_chat_history(query: str, limit: int = 10) -> list[dict]:
 def list_chat_sessions() -> list[dict]:
     """List all chat sessions with message counts."""
     return _get("/chat/sessions")
+
+
+@mcp.tool()
+def get_chat_session(session_id: str) -> dict:
+    """Get messages for a specific chat session.
+
+    Args:
+        session_id: The session ID (e.g. 'gw-6838572051')
+    """
+    return _get(f"/chat/sessions/{session_id}")
+
+
+@mcp.tool()
+def get_metrics() -> dict:
+    """Get aggregated system metrics (CRON stats, memory stats, Claude usage, system info)."""
+    return _get("/metrics")
 
 
 # ── Gateway Sessions ──────────────────────────────────────────

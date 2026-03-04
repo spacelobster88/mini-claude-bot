@@ -91,16 +91,19 @@ def gateway_list_sessions():
 @router.post("/sessions/{chat_id}/reset")
 def gateway_reset_session(chat_id: str):
     """Reset a session's busy state (emergency recovery)."""
+    from backend.services.session_manager import SESSION_BASE_DIR, SessionManager
+
     manager = get_session_manager()
-    # Stop and recreate the session
+    # Stop and recreate the session (also kills running processes)
     manager.stop_session(chat_id)
-    # Clear any leftover Claude CLI session files
+    # Clear any leftover Claude CLI session files (belt-and-suspenders)
     import shutil
     from pathlib import Path
-    session_dir = Path("/tmp/claude-gateway-sessions") / chat_id
+    session_dir = Path(SESSION_BASE_DIR) / chat_id
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
-    claude_session_dir = Path.home() / ".claude" / "projects" / str(session_dir).replace("/", "-")
+    mangled = SessionManager._mangle_cwd(str(session_dir))
+    claude_session_dir = Path.home() / ".claude" / "projects" / mangled
     if claude_session_dir.exists():
         shutil.rmtree(str(claude_session_dir), ignore_errors=True)
     return {"reset": True, "chat_id": chat_id}

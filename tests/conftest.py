@@ -7,18 +7,16 @@ import pytest
 _tmp = tempfile.mkdtemp()
 os.environ["DATABASE_PATH"] = os.path.join(_tmp, "test.db")
 
-from backend.db.engine import get_db, _connection  # noqa: E402
-import backend.db.engine as engine_mod  # noqa: E402
+from backend.db.engine import get_db, reset_db  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def fresh_db():
     """Give every test a fresh database."""
-    engine_mod._connection = None  # force re-init
+    reset_db()
     db = get_db()
     yield db
-    db.close()
-    engine_mod._connection = None
+    reset_db()
     # clean up the db file
     try:
         os.remove(os.environ["DATABASE_PATH"])

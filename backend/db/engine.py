@@ -1,5 +1,6 @@
 import sqlite3
 import struct
+import threading
 from pathlib import Path
 
 import sqlite_vec
@@ -8,6 +9,7 @@ from backend.config import DATABASE_PATH, EMBEDDING_DIM
 from backend.db.migrations import run_migrations
 
 _connection: sqlite3.Connection | None = None
+_write_lock = threading.Lock()
 
 
 def serialize_float32(vec: list[float]) -> bytes:
@@ -15,6 +17,12 @@ def serialize_float32(vec: list[float]) -> bytes:
 
 
 def get_db() -> sqlite3.Connection:
+    """Get the shared database connection.
+
+    Uses a single connection with check_same_thread=False + WAL mode.
+    SQLite WAL allows concurrent reads; writes are serialized via
+    busy_timeout. For critical write sections, use db_write_lock().
+    """
     global _connection
     if _connection is None:
         Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +35,19 @@ def get_db() -> sqlite3.Connection:
         _connection.enable_load_extension(False)
         _init_tables(_connection)
     return _connection
+
+
+def db_write_lock() -> threading.Lock:
+    """Get the write lock for serializing DB writes across threads."""
+    return _write_lock
+
+
+def reset_db() -> None:
+    """Reset DB state (for testing)."""
+    global _connection
+    if _connection is not None:
+        _connection.close()
+        _connection = None
 
 
 def _init_tables(db: sqlite3.Connection) -> None:
