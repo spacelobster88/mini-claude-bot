@@ -32,6 +32,12 @@ class StopRequest(BaseModel):
     chat_id: str
 
 
+class BackgroundSendRequest(BaseModel):
+    chat_id: str
+    message: str
+    bot_token: str
+
+
 @router.post("/send")
 async def gateway_send(req: SendRequest) -> SendResponse:
     manager = get_session_manager()
@@ -114,3 +120,29 @@ def gateway_reset_session(chat_id: str):
     db.commit()
     
     return {"reset": True, "chat_id": chat_id}
+
+
+@router.post("/send-background")
+def gateway_send_background(req: BackgroundSendRequest):
+    """Start a background Claude CLI task. Returns immediately."""
+    manager = get_session_manager()
+    session_id = f"gw-{req.chat_id}"
+
+    # Store user message in DB (like the regular send endpoint)
+    db = get_db()
+    db.execute(
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
+           VALUES (?, ?, ?, ?, ?)""",
+        (session_id, "user", req.message, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+    )
+    db.commit()
+
+    result = manager.send_background(req.chat_id, req.message, req.bot_token)
+    return result
+
+
+@router.get("/background-status/{chat_id}")
+def gateway_background_status(chat_id: str):
+    """Get the status of a background task for the given chat_id."""
+    manager = get_session_manager()
+    return manager.get_background_status(chat_id)

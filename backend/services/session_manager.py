@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-sessions")
@@ -50,6 +52,7 @@ class GatewaySession:
 class SessionManager:
     def __init__(self):
         self._sessions: dict[str, GatewaySession] = {}
+        self._bg_tasks: dict[str, dict] = {}
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
@@ -307,6 +310,106 @@ class SessionManager:
                 session._proc = None
             session._ready.set()  # wake up any queued messages
             self._persist_session(session)
+
+    def send_background(self, chat_id: str, message: str, bot_token: str) -> dict:
+        """Start a background Claude CLI task for the given chat.
+
+        Uses a separate session (bg-{chat_id}) so it doesn't interfere with
+        the main interactive session. Returns immediately. Only one background
+        task per chat_id is allowed at a time. Sends the result to Telegram
+        via bot API on completion.
+        """
+        # Check if a background task is already running for this chat_id
+        existing = self._bg_tasks.get(chat_id)
+        if existing and existing["status"] == "running":
+            return {"status": "rejected", "reason": "already running"}
+
+        bg_session_key = f"bg-{chat_id}"
+        started_at = time.time()
+
+        task_info = {
+            "thread": None,
+            "message": message[:200],
+            "started_at": started_at,
+            "status": "running",
+            "result": None,
+        }
+        self._bg_tasks[chat_id] = task_info
+
+        def _run():
+            try:
+                result = self.send(bg_session_key, message)
+                task_info["status"] = "completed"
+                task_info["result"] = result[:500] if result else ""
+            except Exception as e:
+                result = f"[ERROR] Background task failed: {e}"
+                task_info["status"] = "failed"
+                task_info["result"] = result[:500]
+
+            # Send result to Telegram, splitting into 4096-char chunks
+            self._send_telegram_result(chat_id, result, bot_token)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        task_info["thread"] = thread
+        thread.start()
+
+        logger.info(
+            "Started background task for chat_id=%s (bg session: %s)",
+            chat_id, bg_session_key,
+        )
+        return {"status": "started"}
+
+    def _send_telegram_result(self, chat_id: str, text: str, bot_token: str) -> None:
+        """Send a result message to Telegram, splitting into 4096-char chunks."""
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        max_chunk = 4096
+
+        if not text:
+            text = "(empty response)"
+
+        chunks = [text[i:i + max_chunk] for i in range(0, len(text), max_chunk)]
+
+        for chunk in chunks:
+            try:
+                resp = httpx.post(
+                    url,
+                    json={"chat_id": chat_id, "text": chunk},
+                    timeout=30,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Telegram sendMessage failed for chat_id=%s: %d %s",
+                        chat_id, resp.status_code, resp.text[:200],
+                    )
+            except Exception as e:
+                logger.error(
+                    "Failed to send Telegram message for chat_id=%s: %s",
+                    chat_id, e,
+                )
+
+    def get_background_status(self, chat_id: str) -> dict:
+        """Return the current background task info for this chat_id."""
+        task = self._bg_tasks.get(chat_id)
+        if task is None:
+            return {"status": "idle"}
+
+        now = time.time()
+        elapsed = int(now - task["started_at"])
+
+        if task["status"] == "running":
+            return {
+                "status": "running",
+                "message": task["message"],
+                "elapsed_seconds": elapsed,
+                "started_at": task["started_at"],
+            }
+
+        # completed or failed
+        return {
+            "status": task["status"],
+            "result": task["result"],
+            "elapsed_seconds": elapsed,
+        }
 
     def stop_session(self, chat_id: str) -> bool:
         """Stop and clean up a session, killing any running process."""

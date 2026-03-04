@@ -303,5 +303,30 @@ async def send_gateway_message(chat_id: str, message: str) -> dict:
     return await _post_gateway_async("/gateway/send", json={"chat_id": chat_id, "message": message})
 
 
+@mcp.tool()
+def send_background_message(chat_id: str, message: str, bot_token: str) -> dict:
+    """Send a message to run in the background (non-blocking).
+
+    For long-running tasks like harness loops that shouldn't block the main chat.
+    Results are sent to Telegram when complete.
+
+    Args:
+        chat_id: The Telegram chat ID
+        message: The message/prompt to send to Claude
+        bot_token: Telegram bot token for sending results back
+    """
+    return _post("/gateway/send-background", json={"chat_id": chat_id, "message": message, "bot_token": bot_token})
+
+
+@mcp.tool()
+def get_background_status(chat_id: str) -> dict:
+    """Get the status of a background task for a chat.
+
+    Args:
+        chat_id: The Telegram chat ID to check
+    """
+    return _get(f"/gateway/background-status/{chat_id}")
+
+
 if __name__ == "__main__":
     mcp.run()
