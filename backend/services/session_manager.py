@@ -56,6 +56,7 @@ class SessionManager:
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
+        self._current_harness_loops: int = 0  # Memory guard: track concurrent harness loops
         self._load_persisted_sessions()
 
     def _get_db(self):
@@ -248,6 +249,22 @@ class SessionManager:
             # Clean env: remove CLAUDECODE to avoid "nested session" error
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+            # Memory guard: check concurrent harness loops
+            is_harness_message = self._is_no_timeout_message(message)
+            if is_harness_message and self._current_harness_loops >= MAX_CONCURRENT_HARNESS_LOOPS:
+                logger.warning(
+                    "chat_id=%s: Maximum concurrent harness loops (%d) reached. "
+                    "Queueing message: %.50s",
+                    chat_id, MAX_CONCURRENT_HARNESS_LOOPS, message[:100]
+                )
+                # Return immediately without creating process
+                return f"[QUEUED] Harness loop limit reached. Try again later (max: {MAX_CONCURRENT_HARNESS_LOOPS})."
+
+            # Increment counter for harness messages
+            if is_harness_message:
+                with self._global_lock:
+                    self._current_harness_loops += 1
+
             proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
@@ -283,20 +300,53 @@ class SessionManager:
             if stderr and stderr.strip():
                 logger.info("chat_id=%s stderr (rc=%d): %s", chat_id, proc.returncode, stderr.strip()[:500])
 
+            # Fix: distinguish between tool execution and actual errors
+            # Code -15 is usually SIGTERM (normal termination)
+            # Code 0 is successful (even if no output - tools can be silent)
+            if proc.returncode == 0:
+                # Successful execution - return stdout exactly (empty is OK for tools)
+                return stdout.strip()
+            
+            # Code -15 is SIGTERM - may be normal shutdown
+            if proc.returncode == -15:
+                # Decrement harness loop counter (memory guard)
+                is_harness_message = self._is_no_timeout_message(message)
+                if is_harness_message:
+                    with self._global_lock:
+                        if self._current_harness_loops > 0:
+                            self._current_harness_loops -= 1
+                            logger.info("HARNESS COUNTER: Decremented to %d", self._current_harness_loops)
+                
+                if stderr:
+                    return f"[WARN] Process terminated (SIGTERM)\nstderr: {stderr.strip()[:200]}"
+                else:
+                    return "[HARNESS] Process terminated (graceful shutdown). Session preserved."
+            
+            # Non-zero exit codes other than -15 are actual errors
             if proc.returncode != 0:
+                error_prefix = "[ERROR]"
+                
+                # Check for specific error patterns
                 if stderr:
-                    return f"[ERROR] {stderr.strip()}"
+                    stderr_lower = stderr.lower()
+                    # Known error patterns that are not actual failures
+                    known_patterns = [
+                        "nested session",  # benign, handled elsewhere
+                        "too many requests",  # rate limit, not a failure
+                        "context limit",  # benign limit
+                        "service unavailable",  # temporary
+                    ]
+                    
+                    if any(pattern in stderr_lower for pattern in known_patterns):
+                        error_prefix = "[WARN]"
+                    
+                    return f"{error_prefix} Claude exited with code {proc.returncode}\nstderr: {stderr.strip()[:500]}"
                 else:
-                    return f"[ERROR] Claude exited with code {proc.returncode} but no stderr output"
+                    return f"[ERROR] Claude crashed with code {proc.returncode} (no stderr output)"
 
-            # If stdout is empty, it's likely a tool-only call
-            # Return a descriptive message instead of generic "(empty response)"
-            if not stdout.strip():
-                if stderr:
-                    return f"Executed (no text output)\nstderr: {stderr.strip()[:200]}"
-                else:
-                    return "Executed (no text output - tool-only command)"
-
+            # Return stdout exactly as-is (tool output may be empty)
+            # Tools like `ls`, `cat`, `pwd` may return empty stdout
+            # Empty stdout is SUCCESS, not an error
             return stdout.strip()
 
         except Exception as e:
