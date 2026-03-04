@@ -106,4 +106,11 @@ def gateway_reset_session(chat_id: str):
     claude_session_dir = Path.home() / ".claude" / "projects" / mangled
     if claude_session_dir.exists():
         shutil.rmtree(str(claude_session_dir), ignore_errors=True)
+    
+    # Force a fresh Claude session by clearing session state
+    # This ensures --disable-slash-commands flag takes effect
+    db = get_db()
+    db.execute("DELETE FROM gateway_sessions WHERE chat_id = ?", (chat_id,))
+    db.commit()
+    
     return {"reset": True, "chat_id": chat_id}
