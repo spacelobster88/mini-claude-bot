@@ -64,5 +64,8 @@ async def create_message(msg: MessageCreate):
 
 @router.get("/search")
 async def search_messages(q: str, limit: int = 10):
-    results = await search_chat_messages(q, limit)
-    return results
+    try:
+        results = await search_chat_messages(q, limit)
+        return results
+    except Exception as e:
+        raise HTTPException(503, f"Vector search unavailable (Ollama may be down): {e}")

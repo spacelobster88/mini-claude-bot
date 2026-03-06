@@ -663,12 +663,12 @@ class SessionManager:
         removed_sessions = []
         with self._global_lock:
             to_remove = []
-            for chat_id, session in self._sessions.items():
+            for key, session in self._sessions.items():
                 if not session.busy and (now - session.last_active) > SESSION_IDLE_TIMEOUT:
-                    to_remove.append(chat_id)
-            for chat_id in to_remove:
-                removed_sessions.append(self._sessions.pop(chat_id))
-                logger.info("Cleaned up idle session chat_id=%s", chat_id)
+                    to_remove.append(key)
+            for key in to_remove:
+                removed_sessions.append(self._sessions.pop(key))
+                logger.info("Cleaned up idle session bot_id=%s chat_id=%s", removed_sessions[-1].bot_id, removed_sessions[-1].chat_id)
         # Clean up files and DB outside the lock
         for session in removed_sessions:
             self._cleanup_session_files(session)
@@ -678,14 +678,14 @@ class SessionManager:
         """Auto-recover sessions stuck in busy state beyond the timeout."""
         now = time.time()
         with self._global_lock:
-            for chat_id, session in self._sessions.items():
+            for key, session in self._sessions.items():
                 with session.lock:
                     if session.busy and session.busy_since > 0:
                         stuck_duration = now - session.busy_since
                         if stuck_duration > BUSY_STUCK_TIMEOUT:
                             logger.warning(
-                                "Auto-recovering stuck session chat_id=%s (busy for %ds)",
-                                chat_id, int(stuck_duration),
+                                "Auto-recovering stuck session bot_id=%s chat_id=%s (busy for %ds)",
+                                session.bot_id, session.chat_id, int(stuck_duration),
                             )
                             # Kill any lingering process
                             if session._proc and session._proc.poll() is None:

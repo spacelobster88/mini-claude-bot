@@ -93,5 +93,8 @@ def delete_memory(memory_id: int):
 
 @router.get("/search")
 async def search_memories(q: str, limit: int = 10):
-    results = await search_memory(q, limit)
-    return results
+    try:
+        results = await search_memory(q, limit)
+        return results
+    except Exception as e:
+        raise HTTPException(503, f"Vector search unavailable (Ollama may be down): {e}")

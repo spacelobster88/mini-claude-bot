@@ -97,10 +97,22 @@ def gateway_list_sessions(bot_id: str | None = Query(default=None)):
     return manager.list_sessions(bot_id=bot_id)
 
 
+class ResetRequest(BaseModel):
+    bot_id: str = "default"
+
+
 @router.post("/sessions/{chat_id}/reset")
-def gateway_reset_session(chat_id: str, bot_id: str = Query(default="default")):
+def gateway_reset_session(chat_id: str, req: ResetRequest | None = None, bot_id: str = Query(default=None)):
     """Reset a session's busy state (emergency recovery)."""
     from backend.services.session_manager import SESSION_BASE_DIR, SessionManager
+
+    # Accept bot_id from JSON body or query param (body takes precedence)
+    resolved_bot_id = "default"
+    if req and req.bot_id:
+        resolved_bot_id = req.bot_id
+    elif bot_id:
+        resolved_bot_id = bot_id
+    bot_id = resolved_bot_id
 
     manager = get_session_manager()
     # Stop and recreate the session (also kills running processes)

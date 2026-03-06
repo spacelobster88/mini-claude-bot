@@ -292,7 +292,7 @@ def reset_gateway_session(chat_id: str, bot_id: str = "default") -> dict:
         chat_id: The Telegram chat ID of the session to reset
         bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return _post(f"/gateway/sessions/{chat_id}/reset", json={"bot_id": bot_id})
+    return _request("POST", f"/gateway/sessions/{chat_id}/reset?bot_id={bot_id}")
 
 
 @mcp.tool()
