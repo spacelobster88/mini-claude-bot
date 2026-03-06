@@ -1,7 +1,7 @@
 // SendReportEmail — JXA (JavaScript for Automation)
 // Reads email params from pending_email.json, sends via Mail.app, deletes queue file.
-// Supports reply threading: if reply_to_subject is set, finds the original message
-// in Sent mailbox and replies to it.
+// Supports reply threading: if reply_to_subject is set, finds the most recent message
+// in Sent mailbox containing that subject and replies to it.
 
 ObjC.import("Foundation");
 
@@ -28,31 +28,39 @@ function run() {
   let msg;
 
   if (params.reply_to_subject) {
-    // Find the original message in Sent mailbox to reply to
+    // Find the most recent sent message matching the subject (handles "Re: " prefix)
     let originalMsg = null;
     const accounts = Mail.accounts();
     for (let i = 0; i < accounts.length; i++) {
       try {
-        const sentBox = accounts[i].mailboxes.whose({ name: { _contains: "Sent" } })();
-        for (let j = 0; j < sentBox.length; j++) {
-          const messages = sentBox[j].messages.whose({ subject: params.reply_to_subject })();
+        // Search all mailboxes that look like Sent
+        const allBoxes = accounts[i].mailboxes();
+        for (let j = 0; j < allBoxes.length; j++) {
+          const boxName = allBoxes[j].name();
+          if (boxName.indexOf("Sent") === -1 && boxName.indexOf("sent") === -1) continue;
+
+          // Search for messages containing the subject (matches both exact and "Re: ..." subjects)
+          const messages = allBoxes[j].messages.whose({ subject: { _contains: params.reply_to_subject } })();
           if (messages.length > 0) {
+            // Get the most recent one (first in list = most recent)
             originalMsg = messages[0];
             break;
           }
         }
       } catch (e) {
-        // Skip accounts without Sent mailbox
+        // Skip accounts that error
       }
       if (originalMsg) break;
     }
 
     if (originalMsg) {
       // Reply to the original message
+      console.log("Found original message, replying to thread");
       msg = Mail.reply(originalMsg, { openingWindow: true });
       delay(2);
-      // Set the body (reply prepends to existing content)
-      msg.content = params.body;
+      // Prepend our body before the quoted original
+      const existingContent = msg.content();
+      msg.content = params.body + "\n\n" + existingContent;
     } else {
       // Fallback: send as new message if original not found
       console.log("Original message not found, sending as new email");

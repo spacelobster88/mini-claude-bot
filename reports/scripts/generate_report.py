@@ -72,27 +72,19 @@ EN_PROMPT = r"""Generate a BILINGUAL (English-Chinese) daily report as LaTeX bod
 
 CRITICAL: Output RAW LaTeX ONLY. No markdown, no code blocks, no explanations, no notes. Start directly with \section and end with the LOVENOTE line. Nothing else.
 
-BILINGUAL FORMAT: Interleave English and Chinese PARAGRAPH BY PARAGRAPH. After each English paragraph, immediately put its Chinese translation in \begin{cntranslation}...\end{cntranslation}. Then continue with the next English paragraph, followed by its Chinese translation, and so on. Do NOT write all English first then all Chinese — alternate every paragraph.
-
-Example:
-
-\section{Daily Wisdom}
-``The only way to do great work is to love what you do.'' — Steve Jobs
-\begin{cntranslation}
-「做出伟大工作的唯一方法，就是热爱你所做的事。」—— 史蒂夫·乔布斯
-\end{cntranslation}
-
-The key insight here is that passion drives excellence in every field.
-\begin{cntranslation}
-关键启示是：热情驱动每个领域的卓越表现。
-\end{cntranslation}
+LANGUAGE RULES PER SECTION — follow these STRICTLY:
+- Career Growth: English paragraphs 1-3 are ENGLISH ONLY. Paragraph 4 is CHINESE ONLY.
+- Politics \& Economics: ENGLISH ONLY. No Chinese at all.
+- Stock Watch: CHINESE ONLY. No English at all. No \begin{cntranslation}.
+- Healthy Life: CHINESE ONLY. No English at all. No \begin{cntranslation}.
+- Wisdom \& Love: ENGLISH ONLY. No Chinese at all. No \begin{cntranslation}.
 
 RULES:
 - No \documentclass, \begin{document}, \end{document}
 - Use \href{URL}{Display Text} for links — never raw URLs
 - Escape: \& \% \$ \# \_ \{ \}
 - Use \textbf{} \textit{} for emphasis
-- Alternate English paragraph → \begin{cntranslation}Chinese\end{cntranslation} → English paragraph → \begin{cntranslation}Chinese\end{cntranslation}, throughout EVERY section
+- Use EXACT section names as specified below — do NOT rename them
 
 SECTIONS (use these exact names, in this order):
 
@@ -115,12 +107,9 @@ Pick the TOP 3 most important US and international political/economic news of th
 给出三条健康建议，每条不超过三句话。第一条「今日晚餐🍽️」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑制作时间和复杂度，只需要营养均衡健康。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练🧘🏻‍♀️」：一条针对改善驼背、腰痛、体态的通用小建议（不超过三句话），然后搜索YouTube找一个10-15分钟的改善驼背/腰痛/体态的跟练视频，用\href{url}{视频标题}附上链接。每天推荐不同的视频。第三条「健康小贴士🥦」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
 
 \section{Wisdom \& Love}
-One inspiring quote with attribution. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+One inspiring quote with attribution. Then on the next line, write a short sweet personal love note (1-2 sentences) in pink using \textcolor{heartpink}{...}. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-Search the web for today's ACTUAL news. Use REAL article URLs, not homepages.
-
-FINAL LINE: Output a short sweet personal love note (1-2 sentences) in English. This will be displayed in a special box at the bottom of the report. Format:
-LOVENOTE: You make the world brighter just by being in it."""
+Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
 
 LOVE_NOTE_DEFAULT = "Wishing you a beautiful day filled with joy."
 
@@ -322,7 +311,15 @@ def get_sunnyvale_weather() -> str:
     )
     if result.returncode != 0:
         return "Check the weather before heading out!"
-    return result.stdout.strip()
+    raw = result.stdout.strip()
+    # Strip any "Sources:" or similar trailing sections from Claude output
+    for marker in ["Sources:", "Source:", "References:", "Note:"]:
+        idx = raw.find(marker)
+        if idx > 0:
+            raw = raw[:idx].strip()
+    # Only keep the first line/sentence
+    lines = [l.strip() for l in raw.split("\n") if l.strip()]
+    return lines[0] if lines else "Check the weather before heading out!"
 
 
 WEEKLY_SUBJECT_FILE = SCRIPT_DIR.parent / "output" / "weekly_en_subject.json"
@@ -372,15 +369,28 @@ def generate_english_report(preview: bool = False):
     day_of_week = now_la.strftime("%A")
 
     print(f"Generating English report for {date_str}...")
-    raw_content = sanitize_latex(run_claude(EN_PROMPT))
-    content, love_note = extract_love_note(raw_content)
+    content = sanitize_latex(run_claude(EN_PROMPT))
+
+    # Pick a random dog for the header
+    import random
+    dogs = [
+        r"\node at (0.12\textwidth, 1.4cm) {\dogStanding};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogWithHeart};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogSitting};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogSleeping};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogPair};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogWaving};",
+        r"\node at (0.12\textwidth, 1.4cm) {\dogHearts};",
+    ]
+    random.seed(now_la.toordinal())  # same dog for same day
+    dog_tikz = random.choice(dogs)
 
     # Load template
     template = (TEMPLATE_DIR / "english.tex").read_text()
     tex = (template
            .replace("<<DATE>>", date_str)
-           .replace("<<CONTENT>>", content)
-           .replace("<<LOVE_NOTE>>", love_note))
+           .replace("<<DOG_TIKZ>>", dog_tikz)
+           .replace("<<CONTENT>>", content))
 
     # Write and compile
     tex_path = OUTPUT_DIR / f"daily_en_{date_str_file}.tex"
@@ -399,7 +409,7 @@ def generate_english_report(preview: bool = False):
         f"Good morning.\U00002600\U0000FE0F\n\n"
         f"Today is {day_of_week}, {date_str}. {weather}\n\n"
         f"Fight on and have a nice day.\U0001F4AA\U0001F3FC\U0000263A\U0000FE0F\n\n"
-        f"With love,\nEddie\U0001F436"
+        f"Love,\nEddie\U0001F436"
     )
 
     if preview:
