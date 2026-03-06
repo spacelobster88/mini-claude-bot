@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.db.engine import get_db
@@ -16,6 +16,7 @@ class CronJobCreate(BaseModel):
     job_type: str = "shell"
     enabled: bool = True
     timezone: str | None = None
+    bot_id: str = "default"
 
 
 class CronJobUpdate(BaseModel):
@@ -28,9 +29,12 @@ class CronJobUpdate(BaseModel):
 
 
 @router.get("")
-def list_jobs():
+def list_jobs(bot_id: str = Query(default="default")):
     db = get_db()
-    rows = db.execute("SELECT * FROM cron_jobs ORDER BY created_at DESC").fetchall()
+    rows = db.execute(
+        "SELECT * FROM cron_jobs WHERE bot_id = ? ORDER BY created_at DESC",
+        (bot_id,),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -39,9 +43,9 @@ def create_job(job: CronJobCreate):
     db = get_db()
     now = datetime.now(timezone.utc).isoformat()
     cursor = db.execute(
-        """INSERT INTO cron_jobs (name, cron_expression, command, job_type, enabled, timezone, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (job.name, job.cron_expression, job.command, job.job_type, int(job.enabled), job.timezone, now, now),
+        """INSERT INTO cron_jobs (name, cron_expression, command, job_type, enabled, timezone, bot_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (job.name, job.cron_expression, job.command, job.job_type, int(job.enabled), job.timezone, job.bot_id, now, now),
     )
     db.commit()
     job_id = cursor.lastrowid

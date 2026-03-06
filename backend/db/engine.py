@@ -71,6 +71,8 @@ def _init_tables(db: sqlite3.Connection) -> None:
             content TEXT NOT NULL,
             source TEXT DEFAULT 'telegram',
             telegram_chat_id INTEGER,
+            user_id TEXT,
+            username TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);

@@ -48,10 +48,11 @@ async def gateway_send(req: SendRequest) -> SendResponse:
 
     # Store user message
     db = get_db()
+    tg_chat_id = int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None
     cursor = db.execute(
-        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (session_id, "user", req.message, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id, user_id, username)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, "user", req.message, "telegram", tg_chat_id, req.bot_id, req.user_id, req.username),
     )
     db.commit()
     user_msg_id = cursor.lastrowid
@@ -69,9 +70,9 @@ async def gateway_send(req: SendRequest) -> SendResponse:
     is_error = response.startswith("[ERROR]") or response.startswith("[BUSY]")
     source = "error" if is_error else "telegram"
     cursor = db.execute(
-        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (session_id, "assistant", response, source, int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id, user_id, username)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, "assistant", response, source, tg_chat_id, req.bot_id, None, None),
     )
     db.commit()
     assistant_msg_id = cursor.lastrowid
@@ -144,10 +145,11 @@ def gateway_send_background(req: BackgroundSendRequest):
 
     # Store user message in DB (like the regular send endpoint)
     db = get_db()
+    tg_chat_id = int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None
     db.execute(
-        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (session_id, "user", req.message, "telegram", int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None),
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id, user_id, username)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, "user", req.message, "telegram", tg_chat_id, req.bot_id, None, None),
     )
     db.commit()
 

@@ -9,6 +9,7 @@ mcp = FastMCP("mini-claude-bot")
 API_BASE = os.getenv("MCB_API_BASE", "http://localhost:8000/api")
 DEFAULT_TIMEOUT = int(os.getenv("MCB_MCP_TIMEOUT", "30"))
 GATEWAY_TIMEOUT = int(os.getenv("MCB_GATEWAY_TIMEOUT", "960"))  # 16min, exceeds CLAUDE_TIMEOUT (15min)
+DEFAULT_BOT_ID = os.getenv("MCB_BOT_ID", "default")
 
 
 def _request(method: str, path: str, timeout: int = DEFAULT_TIMEOUT, **kwargs) -> dict | list:
@@ -66,13 +67,17 @@ def health_check() -> dict:
 # ── CRON Jobs ──────────────────────────────────────────────────
 
 @mcp.tool()
-def list_cron_jobs() -> list[dict]:
-    """List all scheduled CRON jobs."""
-    return _get("/cron")
+def list_cron_jobs(bot_id: str | None = None) -> list[dict]:
+    """List all scheduled CRON jobs for a bot.
+
+    Args:
+        bot_id: Bot identifier for multi-tenant isolation. Defaults to MCB_BOT_ID env or 'default'.
+    """
+    return _get("/cron", params={"bot_id": bot_id or DEFAULT_BOT_ID})
 
 
 @mcp.tool()
-def create_cron_job(name: str, cron_expression: str, command: str, job_type: str = "shell", timezone: str | None = None) -> dict:
+def create_cron_job(name: str, cron_expression: str, command: str, job_type: str = "shell", timezone: str | None = None, bot_id: str | None = None) -> dict:
     """Create a new CRON job.
 
     Args:
@@ -81,6 +86,7 @@ def create_cron_job(name: str, cron_expression: str, command: str, job_type: str
         command: Shell command or Claude prompt to run
         job_type: 'shell' for shell commands or 'claude' for Claude prompts
         timezone: IANA timezone (e.g. 'Asia/Shanghai', 'America/Los_Angeles'). Defaults to system timezone.
+        bot_id: Bot identifier for multi-tenant isolation. Defaults to MCB_BOT_ID env or 'default'.
     """
     payload = {
         "name": name,
@@ -88,6 +94,7 @@ def create_cron_job(name: str, cron_expression: str, command: str, job_type: str
         "command": command,
         "job_type": job_type,
         "enabled": True,
+        "bot_id": bot_id or DEFAULT_BOT_ID,
     }
     if timezone:
         payload["timezone"] = timezone
@@ -161,15 +168,16 @@ def get_cron_job_history(job_id: int, limit: int = 20) -> list[dict]:
 # ── Memory ─────────────────────────────────────────────────────
 
 @mcp.tool()
-def add_memory(key: str, content: str, category: str = "general") -> dict:
+def add_memory(key: str, content: str, category: str = "general", bot_id: str | None = None) -> dict:
     """Store a memory with a unique key. Auto-embeds for vector search.
 
     Args:
         key: Unique identifier for this memory
         content: The memory content to store
         category: Category for organizing memories (e.g. 'preferences', 'facts', 'architecture')
+        bot_id: Bot identifier for multi-tenant isolation. Defaults to MCB_BOT_ID env or 'default'.
     """
-    return _post("/memory", json={"key": key, "content": content, "category": category})
+    return _post("/memory", json={"key": key, "content": content, "category": category, "bot_id": bot_id or DEFAULT_BOT_ID})
 
 
 @mcp.tool()
@@ -190,24 +198,28 @@ def update_memory(memory_id: int, content: str | None = None, category: str | No
 
 
 @mcp.tool()
-def search_memory(query: str, limit: int = 5) -> list[dict]:
-    """Semantic vector search across all stored memories.
+def search_memory(query: str, limit: int = 5, bot_id: str | None = None) -> list[dict]:
+    """Semantic vector search across stored memories for a bot.
 
     Args:
         query: Natural language search query
         limit: Maximum number of results to return
+        bot_id: Bot identifier for multi-tenant isolation. Defaults to MCB_BOT_ID env or 'default'.
     """
-    return _get("/memory/search", params={"q": query, "limit": limit})
+    return _get("/memory/search", params={"q": query, "limit": limit, "bot_id": bot_id or DEFAULT_BOT_ID})
 
 
 @mcp.tool()
-def list_memories(category: str | None = None) -> list[dict]:
-    """List all stored memories, optionally filtered by category.
+def list_memories(category: str | None = None, bot_id: str | None = None) -> list[dict]:
+    """List stored memories for a bot, optionally filtered by category.
 
     Args:
         category: Optional category filter
+        bot_id: Bot identifier for multi-tenant isolation. Defaults to MCB_BOT_ID env or 'default'.
     """
-    params = {"category": category} if category else None
+    params = {"bot_id": bot_id or DEFAULT_BOT_ID}
+    if category:
+        params["category"] = category
     return _get("/memory", params=params)
 
 
@@ -224,20 +236,31 @@ def delete_memory(memory_id: int) -> dict:
 # ── Chat History ───────────────────────────────────────────────
 
 @mcp.tool()
-def search_chat_history(query: str, limit: int = 10) -> list[dict]:
-    """Semantic vector search across all chat history.
+def search_chat_history(query: str, limit: int = 10, bot_id: str | None = None) -> list[dict]:
+    """Semantic vector search across chat history for a bot.
 
     Args:
         query: Natural language search query
         limit: Maximum number of results to return
+        bot_id: Bot identifier for multi-tenant isolation. If None, searches all bots.
     """
-    return _get("/chat/search", params={"q": query, "limit": limit})
+    params = {"q": query, "limit": limit}
+    if bot_id:
+        params["bot_id"] = bot_id
+    return _get("/chat/search", params=params)
 
 
 @mcp.tool()
-def list_chat_sessions() -> list[dict]:
-    """List all chat sessions with message counts."""
-    return _get("/chat/sessions")
+def list_chat_sessions(bot_id: str | None = None) -> list[dict]:
+    """List chat sessions with message counts.
+
+    Args:
+        bot_id: Optional bot identifier to filter sessions. If None, lists all.
+    """
+    params = {}
+    if bot_id:
+        params["bot_id"] = bot_id
+    return _get("/chat/sessions", params=params if params else None)
 
 
 @mcp.tool()
@@ -245,7 +268,7 @@ def get_chat_session(session_id: str) -> dict:
     """Get messages for a specific chat session.
 
     Args:
-        session_id: The session ID (e.g. 'gw-6838572051')
+        session_id: The session ID (e.g. 'gw-FridayBot-6838572051')
     """
     return _get(f"/chat/sessions/{session_id}")
 

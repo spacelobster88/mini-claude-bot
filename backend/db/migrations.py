@@ -55,6 +55,20 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE gateway_sessions_new RENAME TO gateway_sessions;
         CREATE INDEX IF NOT EXISTS idx_gateway_bot_id ON gateway_sessions(bot_id);
     """),
+    (6, "add bot_id to memory, cron_jobs, chat_messages for multi-tenant isolation", """
+        ALTER TABLE memory ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'default';
+        CREATE INDEX IF NOT EXISTS idx_memory_bot_id ON memory(bot_id);
+
+        ALTER TABLE cron_jobs ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'default';
+        CREATE INDEX IF NOT EXISTS idx_cron_bot_id ON cron_jobs(bot_id);
+
+        ALTER TABLE chat_messages ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'default';
+        CREATE INDEX IF NOT EXISTS idx_chat_bot_id ON chat_messages(bot_id);
+    """),
+    (7, "add user_id and username to chat_messages for per-user attribution", """
+        ALTER TABLE chat_messages ADD COLUMN user_id TEXT;
+        ALTER TABLE chat_messages ADD COLUMN username TEXT;
+    """),
 ]
 
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.db.engine import get_db
@@ -13,20 +13,33 @@ class MessageCreate(BaseModel):
     content: str
     source: str = "telegram"
     telegram_chat_id: int | None = None
+    bot_id: str = "default"
 
 
 @router.get("/sessions")
-def list_sessions():
+def list_sessions(bot_id: str = Query(default=None)):
     db = get_db()
-    rows = db.execute("""
-        SELECT session_id,
-               MIN(created_at) AS started_at,
-               MAX(created_at) AS last_message_at,
-               COUNT(*) AS message_count
-        FROM chat_messages
-        GROUP BY session_id
-        ORDER BY last_message_at DESC
-    """).fetchall()
+    if bot_id:
+        rows = db.execute("""
+            SELECT session_id, bot_id,
+                   MIN(created_at) AS started_at,
+                   MAX(created_at) AS last_message_at,
+                   COUNT(*) AS message_count
+            FROM chat_messages
+            WHERE bot_id = ?
+            GROUP BY session_id
+            ORDER BY last_message_at DESC
+        """, (bot_id,)).fetchall()
+    else:
+        rows = db.execute("""
+            SELECT session_id, bot_id,
+                   MIN(created_at) AS started_at,
+                   MAX(created_at) AS last_message_at,
+                   COUNT(*) AS message_count
+            FROM chat_messages
+            GROUP BY session_id
+            ORDER BY last_message_at DESC
+        """).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -46,26 +59,25 @@ def get_session(session_id: str):
 async def create_message(msg: MessageCreate):
     db = get_db()
     cursor = db.execute(
-        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (msg.session_id, msg.role, msg.content, msg.source, msg.telegram_chat_id),
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (msg.session_id, msg.role, msg.content, msg.source, msg.telegram_chat_id, msg.bot_id),
     )
     db.commit()
     message_id = cursor.lastrowid
 
-    # Embed asynchronously (best-effort — don't fail the request if Ollama is down)
     try:
         await store_chat_embedding(message_id, msg.content)
     except Exception:
-        pass  # embedding will be missing but message is saved
+        pass
 
     return {"id": message_id}
 
 
 @router.get("/search")
-async def search_messages(q: str, limit: int = 10):
+async def search_messages(q: str, limit: int = 10, bot_id: str = Query(default=None)):
     try:
-        results = await search_chat_messages(q, limit)
+        results = await search_chat_messages(q, limit, bot_id=bot_id)
         return results
     except Exception as e:
         raise HTTPException(503, f"Vector search unavailable (Ollama may be down): {e}")
