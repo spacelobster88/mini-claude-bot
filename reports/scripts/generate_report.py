@@ -96,28 +96,25 @@ RULES:
 
 SECTIONS (use these exact names, in this order):
 
-\section{Daily Tech Learning}
-Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approach: start from the big picture (what is the system, what problem does it solve, how the pieces fit together) before zooming into details. Think system-level and architecture-level, not scattered trivia. Start from beginner-level concepts first; do NOT pick advanced topics unless requested. For each keyword, write ~50 words in English + ~50 words in Chinese translation. Keep it clear, memorable, and practical. Use everyday analogies. No diagrams or images.
+\section{Career Growth}
+Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approach: start from the big picture (what is the system, what problem does it solve, how the pieces fit together) before zooming into details. Think system-level and architecture-level, not scattered trivia. Start from beginner-level concepts first; do NOT pick advanced topics unless requested. For each keyword, write ~50 words in English. Keep it clear, memorable, and practical. Use everyday analogies. No diagrams or images. The 3 English paragraphs are ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation for them.
 1. \textbf{AI Infra} — Start top-down: the overall ML compute stack (hardware → framework → serving), then progressively cover each layer. e.g., Why GPU for ML → training pipeline architecture → model serving system → optimization techniques.
 2. \textbf{ML Platform} — Start top-down: what is an ML platform and why teams need one, then progressively cover each component. e.g., ML lifecycle overview → experiment tracking → model registry → deployment → monitoring.
 3. \textbf{Data Pipeline} — Start top-down: how data flows from source to insight, then progressively cover each stage. e.g., Data architecture overview → ingestion → storage → transformation → serving.
 Use \href{url}{title} to cite one source per topic if relevant.
+4. \textbf{程序员职场小技巧} — 用中文写三句话，讲一个实用的程序员职场生存/成长技巧。话题可以包括：如何跟PM沟通、code review技巧、向上管理、面试准备、时间管理、职业发展等。This paragraph is CHINESE ONLY.
 
 \section{Political \& Economic Trends}
-Key US and international political/economic developments. Each item: \href{url}{headline} followed by a 20-30 word summary. Keep it concise. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+Pick the TOP 3 most important US and international political/economic news of the day. Each item: \href{url}{headline} followed by a 20-30 word summary. Only 3 items, no more. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-\section{My Portfolio Watch}
-Analyze the following stocks I currently hold: ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
-For each stock:
-- Current price and recent movement (search for today's data)
-- Buy/hold/sell recommendation with brief reasoning
-- Any notable news, earnings, analyst upgrades/downgrades, or events worth watching
-Use a table format where possible. Highlight actionable insights with \textbf{}.
+\section{Daily Stock Watch}
+我持有以下股票：ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
+从中挑出最多5个你认为今天最值得关注/操作的股票（可以少于5个）。对每个股票给出：当前价格、买入/卖出/持有建议、机构目标价（搜索最新的华尔街分析师目标价和时间框架）、一句话理由。只用中文，不需要英文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
 
-\section{Healthy Living}
-One practical wellness tip with scientific backing.
+\section{Healthy Tips}
+给出三条健康建议，每条不超过三句话。第一条「今日晚餐Idea」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑做饭复杂性。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练」：给Erin安排改善驼背、腰酸、体态的运动指导。周一到周五给在家10分钟能完成的动作，周六周日给30分钟户外运动方案。要具体写明动作名称、组数和时长。搜索YouTube找一个相关的跟练视频，用\href{url}{视频标题}附上链接。第三条「健康小贴士」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
 
-\section{Daily Wisdom \& Love}
+\section{Wisdom \& Love}
 One inspiring quote with attribution, followed by a short sweet personal note (1-2 sentences) to the reader. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
 Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
