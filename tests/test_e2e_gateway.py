@@ -70,7 +70,8 @@ def test_context_isolation(mock_popen, client):
     call_args = []
 
     def capture_popen(*args, **kwargs):
-        call_args.append((args, kwargs))
+        if args and args[0] and isinstance(args[0], list) and args[0][0] == "claude":
+            call_args.append((args, kwargs))
         return _mock_popen()
 
     mock_popen.side_effect = capture_popen
@@ -94,14 +95,16 @@ def test_context_isolation(mock_popen, client):
 
 # ── Busy handling ────────────────────────────────────────────────
 
+@patch("backend.services.session_manager.QUEUE_WAIT_TIMEOUT", 1)
+@patch("backend.services.session_manager._get_available_memory_mb", return_value=9999)
 @patch("backend.services.session_manager.subprocess.Popen")
-def test_busy_returns_immediately(mock_popen, client):
+def test_busy_returns_immediately(mock_popen, mock_mem, client):
     """When a chat is busy, second message gets [BUSY] response."""
     barrier = threading.Barrier(2, timeout=5)
 
     def slow_popen(*args, **kwargs):
         barrier.wait()  # wait for both threads to be running
-        time.sleep(0.5)
+        time.sleep(2)   # hold busy long enough for msg2 to time out
         return _mock_popen(stdout="slow reply")
 
     mock_popen.side_effect = slow_popen
@@ -116,7 +119,7 @@ def test_busy_returns_immediately(mock_popen, client):
     t1 = threading.Thread(target=send_msg, args=("first", "msg1"))
     t1.start()
 
-    # Wait a bit for first to start, then send second
+    # Wait for first to reach Popen (busy state set), then send second
     barrier.wait()
     r2 = client.post("/api/gateway/send", json={"chat_id": "busy_chat", "message": "msg2"})
 
@@ -177,7 +180,8 @@ def test_session_resume_after_manager_reset(mock_popen, client):
         call_args = []
 
         def capture_popen(*args, **kwargs):
-            call_args.append((args, kwargs))
+            if args and args[0] and isinstance(args[0], list) and args[0][0] == "claude":
+                call_args.append((args, kwargs))
             return _mock_popen(stdout="resumed")
 
         mock_popen.side_effect = capture_popen
@@ -200,7 +204,8 @@ def test_group_chat_shared_context(mock_popen, client):
     call_args = []
 
     def capture_popen(*args, **kwargs):
-        call_args.append((args, kwargs))
+        if args and args[0] and isinstance(args[0], list) and args[0][0] == "claude":
+            call_args.append((args, kwargs))
         return _mock_popen()
 
     mock_popen.side_effect = capture_popen

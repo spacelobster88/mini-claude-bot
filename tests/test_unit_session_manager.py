@@ -56,7 +56,9 @@ def test_session_reuse(manager):
     call_args = []
 
     def capture_popen(*args, **kwargs):
-        call_args.append((args, kwargs))
+        # Only capture claude CLI calls, not subprocess.run internals (e.g. vm_stat)
+        if args and args[0] and isinstance(args[0], list) and args[0][0] == "claude":
+            call_args.append((args, kwargs))
         proc = MagicMock()
         proc.communicate.return_value = ("ok", "")
         proc.returncode = 0
@@ -199,7 +201,9 @@ def test_different_chats_different_cwds(manager, tmp_session_dir):
     call_args = []
 
     def capture_popen(*args, **kwargs):
-        call_args.append((args, kwargs))
+        # Only capture claude CLI calls, not subprocess.run internals (e.g. vm_stat)
+        if args and args[0] and isinstance(args[0], list) and args[0][0] == "claude":
+            call_args.append((args, kwargs))
         proc = MagicMock()
         proc.communicate.return_value = ("ok", "")
         proc.returncode = 0
