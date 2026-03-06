@@ -266,6 +266,25 @@ class SessionManager:
         )
         return False
 
+    def _inject_context(self, session: GatewaySession, message: str) -> str:
+        """Inject filesystem context (e.g. .harness state) into the message.
+
+        Since Claude CLI in -p mode has no tool access, we prepend key state
+        files so Claude is aware of active projects in the session's CWD.
+        """
+        context_parts = []
+        harness_dir = Path(session.cwd) / ".harness"
+        if harness_dir.exists():
+            for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
+                fp = harness_dir / name
+                if fp.exists():
+                    content = fp.read_text()[:max_len]
+                    context_parts.append(f"[.harness/{name}]:\n{content}")
+        if not context_parts:
+            return message
+        prefix = "Active project state in working directory:\n" + "\n\n".join(context_parts)
+        return f"{prefix}\n\n---\nUser message: {message}"
+
     def _run_claude_cli(self, session: GatewaySession, message: str, env: dict) -> tuple[int, str, str]:
         """Run Claude CLI once and return (returncode, stdout, stderr).
 
@@ -279,7 +298,7 @@ class SessionManager:
         ]
         if session.first_done:
             args.append("--continue")
-        args.append(message)
+        args.append(self._inject_context(session, message))
 
         proc = subprocess.Popen(
             args,
@@ -453,11 +472,34 @@ class SessionManager:
         via bot API on completion.
         """
         # Check if a background task is already running for this chat_id
-        existing = self._bg_tasks.get(chat_id)
-        if existing and existing["status"] == "running":
-            return {"status": "rejected", "reason": "already running"}
+        with self._global_lock:
+            existing = self._bg_tasks.get(chat_id)
+            if existing and existing["status"] == "running":
+                thread = existing.get("thread")
+                if thread and thread.is_alive():
+                    elapsed = time.time() - existing.get("started_at", 0)
+                    if elapsed > BUSY_STUCK_TIMEOUT:
+                        logger.warning(
+                            "Force-clearing stale bg task for chat_id=%s (running %ds)",
+                            chat_id, int(elapsed),
+                        )
+                        existing["status"] = "failed"
+                        existing["result"] = f"Force-cleared: exceeded {BUSY_STUCK_TIMEOUT}s timeout"
+                    else:
+                        return {"status": "rejected", "reason": "already running", "elapsed": int(elapsed)}
+                else:
+                    logger.warning("Recovering dead bg task for chat_id=%s", chat_id)
+                    existing["status"] = "failed"
+                    existing["result"] = "Thread died unexpectedly"
 
         bg_session_key = f"bg-{chat_id}"
+        # Share CWD with main session so background work is visible to main chat
+        main_session = self._get_or_create(chat_id)
+        bg_session = self._get_or_create(bg_session_key)
+        if bg_session.cwd != main_session.cwd:
+            bg_session.cwd = main_session.cwd
+            self._persist_session(bg_session)
+            logger.info("Synced bg session CWD to main: %s", main_session.cwd)
         started_at = time.time()
 
         task_info = {

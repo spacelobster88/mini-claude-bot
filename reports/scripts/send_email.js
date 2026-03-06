@@ -1,5 +1,7 @@
 // SendReportEmail — JXA (JavaScript for Automation)
 // Reads email params from pending_email.json, sends via Mail.app, deletes queue file.
+// Supports reply threading: if reply_to_subject is set, finds the original message
+// in Sent mailbox and replies to it.
 
 ObjC.import("Foundation");
 
@@ -23,13 +25,55 @@ function run() {
   Mail.activate();
   delay(2);
 
-  const msg = Mail.OutgoingMessage({
-    subject: params.subject,
-    content: params.body,
-    visible: true,
-    sender: params.sender,
-  });
-  Mail.outgoingMessages.push(msg);
+  let msg;
+
+  if (params.reply_to_subject) {
+    // Find the original message in Sent mailbox to reply to
+    let originalMsg = null;
+    const accounts = Mail.accounts();
+    for (let i = 0; i < accounts.length; i++) {
+      try {
+        const sentBox = accounts[i].mailboxes.whose({ name: { _contains: "Sent" } })();
+        for (let j = 0; j < sentBox.length; j++) {
+          const messages = sentBox[j].messages.whose({ subject: params.reply_to_subject })();
+          if (messages.length > 0) {
+            originalMsg = messages[0];
+            break;
+          }
+        }
+      } catch (e) {
+        // Skip accounts without Sent mailbox
+      }
+      if (originalMsg) break;
+    }
+
+    if (originalMsg) {
+      // Reply to the original message
+      msg = Mail.reply(originalMsg, { openingWindow: true });
+      delay(2);
+      // Set the body (reply prepends to existing content)
+      msg.content = params.body;
+    } else {
+      // Fallback: send as new message if original not found
+      console.log("Original message not found, sending as new email");
+      msg = Mail.OutgoingMessage({
+        subject: params.subject,
+        content: params.body,
+        visible: true,
+        sender: params.sender,
+      });
+      Mail.outgoingMessages.push(msg);
+    }
+  } else {
+    // New email (not a reply)
+    msg = Mail.OutgoingMessage({
+      subject: params.subject,
+      content: params.body,
+      visible: true,
+      sender: params.sender,
+    });
+    Mail.outgoingMessages.push(msg);
+  }
 
   // Add recipients
   msg.toRecipients.push(Mail.Recipient({ address: params.to }));

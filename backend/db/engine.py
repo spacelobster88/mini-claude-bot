@@ -8,8 +8,10 @@ import sqlite_vec
 from backend.config import DATABASE_PATH, EMBEDDING_DIM
 from backend.db.migrations import run_migrations
 
-_connection: sqlite3.Connection | None = None
+_local = threading.local()
 _write_lock = threading.Lock()
+_init_lock = threading.Lock()
+_tables_initialized = False
 
 
 def serialize_float32(vec: list[float]) -> bytes:
@@ -17,24 +19,32 @@ def serialize_float32(vec: list[float]) -> bytes:
 
 
 def get_db() -> sqlite3.Connection:
-    """Get the shared database connection.
+    """Get a per-thread database connection.
 
-    Uses a single connection with check_same_thread=False + WAL mode.
-    SQLite WAL allows concurrent reads; writes are serialized via
-    busy_timeout. For critical write sections, use db_write_lock().
+    Each thread gets its own connection to avoid cross-thread transaction
+    leakage. All connections use WAL mode for concurrent reads; writes
+    are serialized via busy_timeout + db_write_lock().
     """
-    global _connection
-    if _connection is None:
+    global _tables_initialized
+    conn = getattr(_local, 'connection', None)
+    if conn is None:
         Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-        _connection = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-        _connection.execute("PRAGMA journal_mode=WAL")
-        _connection.execute("PRAGMA busy_timeout=5000")
-        _connection.row_factory = sqlite3.Row
-        _connection.enable_load_extension(True)
-        sqlite_vec.load(_connection)
-        _connection.enable_load_extension(False)
-        _init_tables(_connection)
-    return _connection
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        _local.connection = conn
+
+        # Initialize tables once (first thread to connect)
+        with _init_lock:
+            if not _tables_initialized:
+                _init_tables(conn)
+                _tables_initialized = True
+
+    return conn
 
 
 def db_write_lock() -> threading.Lock:
@@ -44,10 +54,12 @@ def db_write_lock() -> threading.Lock:
 
 def reset_db() -> None:
     """Reset DB state (for testing)."""
-    global _connection
-    if _connection is not None:
-        _connection.close()
-        _connection = None
+    global _tables_initialized
+    conn = getattr(_local, 'connection', None)
+    if conn is not None:
+        conn.close()
+        _local.connection = None
+    _tables_initialized = False
 
 
 def _init_tables(db: sqlite3.Connection) -> None:

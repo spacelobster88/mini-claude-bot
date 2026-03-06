@@ -104,20 +104,23 @@ Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approac
 Use \href{url}{title} to cite one source per topic if relevant.
 4. \textbf{程序员职场小技巧} — 用中文写三句话，讲一个实用的程序员职场生存/成长技巧。话题可以包括：如何跟PM沟通、code review技巧、向上管理、面试准备、时间管理、职业发展等。This paragraph is CHINESE ONLY.
 
-\section{Political \& Economic Trends}
-Pick the TOP 3 most important US and international political/economic news of the day. Each item: \href{url}{headline} followed by a 20-30 word summary. Only 3 items, no more. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+\section{Politics \& Economics}
+Pick the TOP 3 most important US and international political/economic news of the day. Use bullet points (\\begin{itemize}), NOT numbered lists. Each item: \href{url}{headline} followed by ONE sentence summary only — no extra details or elaboration. Only 3 items, no more. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-\section{Daily Stock Watch}
+\section{Stock Watch}
 我持有以下股票：ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
-从中挑出最多5个你认为今天最值得关注/操作的股票（可以少于5个）。对每个股票给出：当前价格、买入/卖出/持有建议、机构目标价（搜索最新的华尔街分析师目标价和时间框架）、一句话理由。只用中文，不需要英文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
+从中挑出最多5个你认为今天最值得关注/操作的股票（可以少于5个）。用bullet point格式。每个股票格式统一为：股票代码（当前价格, 当日涨跌幅%）— 建议。然后给出机构目标价和一句话理由。确保每只股票都有当前价格和涨跌幅，格式一致。只用中文，不需要英文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
 
-\section{Healthy Tips}
-给出三条健康建议，每条不超过三句话。第一条「今日晚餐Idea」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑做饭复杂性。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练」：给Erin安排改善驼背、腰酸、体态的运动指导。周一到周五给在家10分钟能完成的动作，周六周日给30分钟户外运动方案。要具体写明动作名称、组数和时长。搜索YouTube找一个相关的跟练视频，用\href{url}{视频标题}附上链接。第三条「健康小贴士」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
+\section{Healthy Life}
+给出三条健康建议，每条不超过三句话。第一条「今日晚餐🍽️」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑制作时间和复杂度，只需要营养均衡健康。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练🧘🏻‍♀️」：一条针对改善驼背、腰痛、体态的通用小建议（不超过三句话），然后搜索YouTube找一个10-15分钟的改善驼背/腰痛/体态的跟练视频，用\href{url}{视频标题}附上链接。每天推荐不同的视频。第三条「健康小贴士🥦」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
 
 \section{Wisdom \& Love}
-One inspiring quote with attribution, followed by a short sweet personal note (1-2 sentences) to the reader. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+One inspiring quote with attribution. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
+Search the web for today's ACTUAL news. Use REAL article URLs, not homepages.
+
+FINAL LINE: Output a short sweet personal love note (1-2 sentences) in English. This will be displayed in a special box at the bottom of the report. Format:
+LOVENOTE: You make the world brighter just by being in it."""
 
 LOVE_NOTE_DEFAULT = "Wishing you a beautiful day filled with joy."
 
@@ -208,12 +211,15 @@ SEND_QUEUE = SCRIPT_DIR.parent / "output" / "pending_email.json"
 SEND_JXA = SCRIPT_DIR / "send_email.js"
 
 
-def send_email(to: str, cc: str, bcc: str, subject: str, body: str, attachment: str) -> None:
+def send_email(to: str, cc: str, bcc: str, subject: str, body: str, attachment: str, reply_to_subject: str = "") -> None:
     """Send email via Mail.app using JXA (JavaScript for Automation).
 
     Writes email params to a JSON queue file, then runs the JXA script
     via osascript. The JXA script reads the queue, sends via Mail.app,
     and deletes the queue file on success.
+
+    If reply_to_subject is set, the script will search the Sent mailbox
+    for a message with that subject and reply to it (for email threading).
     """
     params = {
         "sender": SENDER,
@@ -223,6 +229,7 @@ def send_email(to: str, cc: str, bcc: str, subject: str, body: str, attachment: 
         "subject": subject,
         "body": body,
         "attachment": attachment,
+        "reply_to_subject": reply_to_subject,
     }
     SEND_QUEUE.write_text(json.dumps(params, ensure_ascii=False))
 
@@ -301,19 +308,79 @@ def generate_chinese_report(preview: bool = False):
         send_email(to=CONTACTS["primary"], cc=CONTACTS["cc"], bcc="", subject=subject, body=body, attachment=str(pdf_path.resolve()))
 
 
+def get_sunnyvale_weather() -> str:
+    """Get today's weather for Sunnyvale via Claude CLI."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    result = subprocess.run(
+        [
+            "claude", "-p",
+            "--output-format", "text",
+            "--allowedTools", "WebSearch,WebFetch",
+        ],
+        input="Search for today's weather in Sunnyvale, CA. Reply with ONE short sentence: temperature range (°F), conditions, and clothing suggestions for morning, afternoon, AND evening. Example: 'Sunny, 58-72°F — light jacket in the morning, t-shirt by afternoon, bring a sweater for the evening.' Nothing else.",
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    if result.returncode != 0:
+        return "Check the weather before heading out!"
+    return result.stdout.strip()
+
+
+WEEKLY_SUBJECT_FILE = SCRIPT_DIR.parent / "output" / "weekly_en_subject.json"
+WEEKLY_PREVIEW_SUBJECT_FILE = SCRIPT_DIR.parent / "output" / "weekly_en_preview_subject.json"
+
+
+def _get_weekly_subject(now_la, preview: bool = False) -> tuple[str, str]:
+    """Return (subject, reply_to_subject) for weekly email threading.
+
+    Production: Monday starts new thread, Tue-Sun reply to previous day.
+    Preview: separate thread from production. New thread after Sunday midnight PT.
+    Both reply to the previous email in their respective thread.
+    """
+    monday = now_la - timedelta(days=now_la.weekday())
+    week_label = monday.strftime('%b %d, %Y')
+
+    if preview:
+        state_file = WEEKLY_PREVIEW_SUBJECT_FILE
+        today_subject = f"[Auto Test] Erin's Daily\U0001F4F0"
+    else:
+        state_file = WEEKLY_SUBJECT_FILE
+        today_subject = f"Erin's Daily\U0001F4F0"
+
+    # Check if we need a new thread (Monday, or week changed since last send)
+    start_new = now_la.weekday() == 0  # Monday
+    reply_to = ""
+
+    if state_file.exists():
+        saved = json.loads(state_file.read_text())
+        saved_week = saved.get("week_label", "")
+        if saved_week != week_label:
+            start_new = True  # New week since last send
+        elif not start_new:
+            reply_to = saved.get("last_subject", "")
+
+    state_file.write_text(json.dumps({
+        "last_subject": today_subject,
+        "week_label": week_label,
+    }))
+    return today_subject, reply_to
+
+
 def generate_english_report(preview: bool = False):
     now_la = datetime.now(timezone(timedelta(hours=-8)))
     date_str = now_la.strftime("%B %d, %Y")
     date_str_file = now_la.strftime("%Y-%m-%d")
+    day_of_week = now_la.strftime("%A")
 
     print(f"Generating English report for {date_str}...")
-    content = sanitize_latex(run_claude(EN_PROMPT))
+    raw_content = sanitize_latex(run_claude(EN_PROMPT))
+    content, love_note = extract_love_note(raw_content)
 
     # Load template
     template = (TEMPLATE_DIR / "english.tex").read_text()
     tex = (template
            .replace("<<DATE>>", date_str)
-           .replace("<<CONTENT>>", content))
+           .replace("<<CONTENT>>", content)
+           .replace("<<LOVE_NOTE>>", love_note))
 
     # Write and compile
     tex_path = OUTPUT_DIR / f"daily_en_{date_str_file}.tex"
@@ -321,13 +388,24 @@ def generate_english_report(preview: bool = False):
     pdf_path = compile_pdf(tex_path, OUTPUT_DIR)
     print(f"PDF generated: {pdf_path}")
 
-    subject = f"Daily Intelligence Report - {date_str}"
-    body = f"Good morning!\n\nYour daily report is attached.\n\n---\nAuto-generated by mini-claude-bot"
+    # Get weather for email body
+    weather = get_sunnyvale_weather()
+
+    # Weekly threading (separate threads for preview and production)
+    subject, reply_to_subject = _get_weekly_subject(now_la, preview=preview)
+
+    body = (
+        f"Dear Erin\U0001F427,\n\n"
+        f"Good morning.\U00002600\U0000FE0F\n\n"
+        f"Today is {day_of_week}, {date_str}. {weather}\n\n"
+        f"Fight on and have a nice day.\U0001F4AA\U0001F3FC\U0000263A\U0000FE0F\n\n"
+        f"With love,\nEddie\U0001F436"
+    )
 
     if preview:
-        send_email(to=CONTACTS["cc"], cc="", bcc="", subject=f"[PREVIEW] {subject}", body=body, attachment=str(pdf_path.resolve()))
+        send_email(to=CONTACTS["secondary"], cc=CONTACTS["cc"], bcc="", subject=subject, body=body, attachment=str(pdf_path.resolve()), reply_to_subject=reply_to_subject)
     else:
-        send_email(to=CONTACTS["secondary"], cc=CONTACTS["cc"], bcc="", subject=subject, body=body, attachment=str(pdf_path.resolve()))
+        send_email(to=CONTACTS["secondary"], cc=CONTACTS["cc"], bcc="", subject=subject, body=body, attachment=str(pdf_path.resolve()), reply_to_subject=reply_to_subject)
 
 
 def main():
