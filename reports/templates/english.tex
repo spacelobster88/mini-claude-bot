@@ -1,4 +1,6 @@
 \documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{luatexja-fontspec}
 \usepackage[margin=2.2cm, top=2.8cm, bottom=2.5cm]{geometry}
 \usepackage{xcolor}
 \usepackage{titlesec}
@@ -7,16 +9,15 @@
 \usepackage{fancyhdr}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{xeCJK}
-\usepackage{fontspec}
 \usepackage{tikz}
+\usetikzlibrary{calc}
 \usepackage{tcolorbox}
 \tcbuselibrary{skins,breakable}
 
-\setCJKmainfont{Songti SC}
-\setCJKsansfont{Heiti SC}
-\setCJKmonofont{Kaiti SC}
+\setmainjfont{Songti SC}
+\setsansjfont{Heiti SC}
 \setmainfont{Helvetica Neue}
+\newfontfamily\emojifont{Apple Color Emoji}[Renderer=HarfBuzz]
 
 % Bilingual styling
 \definecolor{cntext}{HTML}{475569}
@@ -198,10 +199,12 @@
 \begin{center}
 \begin{tikzpicture}
 \fill[titleblue, rounded corners=4pt] (0,0) rectangle (\textwidth, 2.8cm);
-% Dog illustration (selected by <<DOG_INDEX>>)
+% Moonlab line-drawing dog sticker (left side)
+\node[anchor=center, inner sep=0pt] at (1.2cm, 1.4cm) {\includegraphics[height=2.2cm]{<<ASSETS_DIR>>/moonlab_dog_white.png}};
+% TikZ dog watermark (right side, faint)
 <<DOG_TIKZ>>
-\node[anchor=center, white] at (0.5\textwidth, 1.7cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily Erin's Daily Feed};
-\node[anchor=center, white, opacity=0.85] at (0.5\textwidth, 0.6cm) {\Large\sffamily <<DATE>>};
+\node[anchor=center, white] at (0.52\textwidth, 1.7cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily Erin's Daily Feed};
+\node[anchor=center, white, opacity=0.85] at (0.52\textwidth, 0.6cm) {\Large\sffamily <<DATE>>};
 \end{tikzpicture}
 \end{center}
 \vspace{1em}

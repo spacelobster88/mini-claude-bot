@@ -113,6 +113,41 @@ Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
 
 LOVE_NOTE_DEFAULT = "Wishing you a beautiful day filled with joy."
 
+# Regex matching emoji characters (Unicode emoji ranges)
+_EMOJI_RE = re.compile(
+    "["
+    "\U0000200D"          # zero-width joiner
+    "\U0000FE0F"          # variation selector
+    "\U00002600-\U000027BF"  # misc symbols
+    "\U0001F300-\U0001F9FF"  # emoticons, symbols, etc.
+    "\U0001FA00-\U0001FAFF"  # extended-A
+    "\U0001F3FB-\U0001F3FF"  # skin tone modifiers
+    "]+",
+    flags=re.UNICODE,
+)
+
+# Skin tone modifiers and ZWJ sequences break in LuaTeX — strip them to base emoji
+_ZWJ_STRIP_RE = re.compile(
+    "[\U0001F3FB-\U0001F3FF]"  # skin tone modifiers
+    "|[\U0000200D]."           # ZWJ + next char (gender/hair modifiers)
+    "|[\U0000FE0F]",           # variation selectors
+    flags=re.UNICODE,
+)
+
+
+def wrap_emojis_for_latex(text: str) -> str:
+    """Wrap emoji characters with {\\emojifont ...} for LuaLaTeX rendering.
+
+    Strips ZWJ sequences and skin tone modifiers that LuaTeX cannot handle,
+    keeping only the base emoji.
+    """
+    def _wrap(m: re.Match) -> str:
+        emoji = _ZWJ_STRIP_RE.sub("", m.group())
+        if not emoji:
+            return ""
+        return r"{\emojifont " + emoji + "}"
+    return _EMOJI_RE.sub(_wrap, text)
+
 
 def run_claude(prompt: str) -> str:
     """Send prompt to Claude CLI and get response."""
@@ -186,7 +221,7 @@ def extract_love_note(content: str) -> tuple[str, str]:
 def compile_pdf(tex_path: Path, output_dir: Path) -> Path:
     """Compile .tex to PDF using XeLaTeX."""
     result = subprocess.run(
-        ["xelatex", "-interaction=nonstopmode", "-output-directory", str(output_dir), str(tex_path)],
+        ["lualatex", "-interaction=nonstopmode", "-output-directory", str(output_dir), str(tex_path)],
         capture_output=True, text=True, timeout=120,
     )
     pdf_path = output_dir / tex_path.with_suffix(".pdf").name
@@ -261,7 +296,7 @@ def generate_chinese_report(preview: bool = False):
     date_str_file = now_shanghai.strftime("%Y-%m-%d")
 
     print(f"Generating Chinese report for {date_str}...")
-    content = sanitize_latex(run_claude(CN_PROMPT))
+    content = wrap_emojis_for_latex(sanitize_latex(run_claude(CN_PROMPT)))
 
     # Load template
     template = (TEMPLATE_DIR / "chinese.tex").read_text()
@@ -369,27 +404,29 @@ def generate_english_report(preview: bool = False):
     day_of_week = now_la.strftime("%A")
 
     print(f"Generating English report for {date_str}...")
-    content = sanitize_latex(run_claude(EN_PROMPT))
+    content = wrap_emojis_for_latex(sanitize_latex(run_claude(EN_PROMPT)))
 
     # Pick a random dog for the header
     import random
     dogs = [
-        r"\node at (0.12\textwidth, 1.4cm) {\dogStanding};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogWithHeart};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogSitting};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogSleeping};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogPair};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogWaving};",
-        r"\node at (0.12\textwidth, 1.4cm) {\dogHearts};",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogHappy \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogHeart \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogSleepy \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogPair \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogWave \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogHearts \end{scope}",
+        r"\begin{scope}[shift={(\textwidth-1.2cm, 1.4cm)}] \dogCookie \end{scope}",
     ]
     random.seed(now_la.toordinal())  # same dog for same day
     dog_tikz = random.choice(dogs)
 
     # Load template
     template = (TEMPLATE_DIR / "english.tex").read_text()
+    assets_dir = str(TEMPLATE_DIR.parent / "assets")
     tex = (template
            .replace("<<DATE>>", date_str)
            .replace("<<DOG_TIKZ>>", dog_tikz)
+           .replace("<<ASSETS_DIR>>", assets_dir)
            .replace("<<CONTENT>>", content))
 
     # Write and compile

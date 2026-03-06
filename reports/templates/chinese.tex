@@ -1,5 +1,6 @@
 \documentclass[11pt,a4paper]{article}
-\usepackage{xeCJK}
+\usepackage{fontspec}
+\usepackage{luatexja-fontspec}
 \usepackage[margin=2.2cm, top=2.8cm, bottom=2.5cm]{geometry}
 \usepackage{xcolor}
 \usepackage{titlesec}
@@ -8,15 +9,14 @@
 \usepackage{fancyhdr}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{fontspec}
 \usepackage{tikz}
 \usepackage{tcolorbox}
 \tcbuselibrary{skins,breakable}
 
-\setCJKmainfont{Songti SC}
-\setCJKsansfont{Heiti SC}
-\setCJKmonofont{Kaiti SC}
+\setmainjfont{Songti SC}
+\setsansjfont{Heiti SC}
 \setmainfont{Helvetica Neue}
+\newfontfamily\emojifont{Apple Color Emoji}[Renderer=HarfBuzz]
 
 % Color palette
 \definecolor{titleblue}{HTML}{1e3a5f}
