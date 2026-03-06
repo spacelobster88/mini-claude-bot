@@ -7,12 +7,20 @@
 \usepackage{fancyhdr}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{xeCJK}
 \usepackage{fontspec}
 \usepackage{tikz}
 \usepackage{tcolorbox}
 \tcbuselibrary{skins,breakable}
 
+\setCJKmainfont{Songti SC}
+\setCJKsansfont{Heiti SC}
+\setCJKmonofont{Kaiti SC}
 \setmainfont{Helvetica Neue}
+
+% Bilingual styling
+\definecolor{cntext}{HTML}{475569}
+\newenvironment{cntranslation}{\par\vspace{0.3em}\begin{quote}\small\color{cntext}}{\end{quote}\vspace{0.2em}}
 
 % Color palette
 \definecolor{titleblue}{HTML}{1e3a5f}
@@ -66,9 +74,10 @@
 % Title block
 \begin{center}
 \begin{tikzpicture}
-\fill[titleblue, rounded corners=4pt] (0,0) rectangle (\textwidth, 2.8cm);
-\node[anchor=center, white] at (0.5\textwidth, 1.8cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily Daily Intelligence Report};
-\node[anchor=center, white, opacity=0.85] at (0.5\textwidth, 0.95cm) {\Large\sffamily <<DATE>>};
+\fill[titleblue, rounded corners=4pt] (0,0) rectangle (\textwidth, 3.2cm);
+\node[anchor=center, white] at (0.5\textwidth, 2.0cm) {\fontsize{26}{30}\selectfont\bfseries\sffamily Daily Intelligence Report};
+\node[anchor=center, white, opacity=0.75] at (0.5\textwidth, 1.3cm) {\Large\sffamily 每日智能报告};
+\node[anchor=center, white, opacity=0.85] at (0.5\textwidth, 0.7cm) {\Large\sffamily <<DATE>>};
 \node[anchor=center, white, opacity=0.6] at (0.5\textwidth, 0.35cm) {\small\sffamily mini-claude-bot};
 \end{tikzpicture}
 \end{center}
@@ -77,21 +86,6 @@
 <<CONTENT>>
 
 \vfill
-
-% Love note box
-\begin{tcolorbox}[
-    colback=lovebg,
-    colframe=loveborder,
-    arc=6pt,
-    boxrule=0.8pt,
-    left=12pt, right=12pt, top=10pt, bottom=10pt,
-    width=0.75\textwidth,
-    center,
-]
-\centering
-{\large\color{heartpink}\bfseries <<LOVE_NOTE>>}\\[0.4em]
-{\color{heartpink} With all my love}
-\end{tcolorbox}
 
 \vspace{1em}
 \begin{center}

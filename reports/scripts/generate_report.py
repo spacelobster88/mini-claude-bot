@@ -68,54 +68,59 @@ Political/economic news from 新浪财经, 东方财富, 香港信报. \href{url
 
 Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
 
-EN_PROMPT = r"""Generate an English daily report as LaTeX body content. Search the web for today's real news.
+EN_PROMPT = r"""Generate a BILINGUAL (English-Chinese) daily report as LaTeX body content. Search the web for today's real news.
 
 CRITICAL: Output RAW LaTeX ONLY. No markdown, no code blocks, no explanations, no notes. Start directly with \section and end with the LOVENOTE line. Nothing else.
+
+BILINGUAL FORMAT: Interleave English and Chinese PARAGRAPH BY PARAGRAPH. After each English paragraph, immediately put its Chinese translation in \begin{cntranslation}...\end{cntranslation}. Then continue with the next English paragraph, followed by its Chinese translation, and so on. Do NOT write all English first then all Chinese — alternate every paragraph.
+
+Example:
+
+\section{Daily Wisdom}
+``The only way to do great work is to love what you do.'' — Steve Jobs
+\begin{cntranslation}
+「做出伟大工作的唯一方法，就是热爱你所做的事。」—— 史蒂夫·乔布斯
+\end{cntranslation}
+
+The key insight here is that passion drives excellence in every field.
+\begin{cntranslation}
+关键启示是：热情驱动每个领域的卓越表现。
+\end{cntranslation}
 
 RULES:
 - No \documentclass, \begin{document}, \end{document}
 - Use \href{URL}{Display Text} for links — never raw URLs
 - Escape: \& \% \$ \# \_ \{ \}
 - Use \textbf{} \textit{} for emphasis
+- Alternate English paragraph → \begin{cntranslation}Chinese\end{cntranslation} → English paragraph → \begin{cntranslation}Chinese\end{cntranslation}, throughout EVERY section
 
 SECTIONS (use these exact names, in this order):
 
-\section{Tech \& Architecture: AI/ML Deep Dive}
-This section is for interview preparation — focus on KNOWLEDGE and CONCEPTS, NOT news headlines.
-For each of the three topics below, provide one in-depth insight: a key concept, architectural pattern, design trade-off, best practice, or system design principle that would be valuable in a technical interview.
-1. \textbf{AI Infra} — e.g., GPU scheduling strategies, model serving architectures (Triton, vLLM), training parallelism (data/model/pipeline), cost optimization patterns, distributed training frameworks.
-2. \textbf{ML Platform} — e.g., feature store design (online vs offline), model registry patterns, experiment tracking architecture, ML pipeline orchestration (Kubeflow, Metaflow), A/B testing infrastructure.
-3. \textbf{Data Pipeline} — e.g., streaming vs batch trade-offs, exactly-once semantics, data quality frameworks (Great Expectations, Deequ), lakehouse architecture, orchestration patterns (Airflow, Dagster, Prefect).
-Search for recent blog posts, engineering articles, or open-source projects that illustrate these concepts. Explain the WHY and HOW, not just the WHAT. Use \href{url}{title} to cite sources.
+\section{Daily Tech Learning}
+Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approach: start from the big picture (what is the system, what problem does it solve, how the pieces fit together) before zooming into details. Think system-level and architecture-level, not scattered trivia. Start from beginner-level concepts first; do NOT pick advanced topics unless requested. For each keyword, write ~50 words in English + ~50 words in Chinese translation. Keep it clear, memorable, and practical. Use everyday analogies. No diagrams or images.
+1. \textbf{AI Infra} — Start top-down: the overall ML compute stack (hardware → framework → serving), then progressively cover each layer. e.g., Why GPU for ML → training pipeline architecture → model serving system → optimization techniques.
+2. \textbf{ML Platform} — Start top-down: what is an ML platform and why teams need one, then progressively cover each component. e.g., ML lifecycle overview → experiment tracking → model registry → deployment → monitoring.
+3. \textbf{Data Pipeline} — Start top-down: how data flows from source to insight, then progressively cover each stage. e.g., Data architecture overview → ingestion → storage → transformation → serving.
+Use \href{url}{title} to cite one source per topic if relevant.
 
-\section{US Market Deep Dive}
-S\&P 500, NASDAQ, Dow Jones, notable movers, sector analysis. Real data + \href links.
+\section{Political \& Economic Trends}
+Key US and international political/economic developments. Each item: \href{url}{headline} followed by a 20-30 word summary. Keep it concise. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-\section{Risk \& Opportunity Assessment}
-Balanced analysis of market risks and opportunities.
-
-\section{Daily Wisdom}
-One inspiring quote with attribution.
-
-\section{Tech Frontier}
-Latest tech news and emerging trends. \href{url}{title} for sources.
-
-\section{Financial Insights}
-Pick one investment concept, explain clearly.
+\section{My Portfolio Watch}
+Analyze the following stocks I currently hold: ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
+For each stock:
+- Current price and recent movement (search for today's data)
+- Buy/hold/sell recommendation with brief reasoning
+- Any notable news, earnings, analyst upgrades/downgrades, or events worth watching
+Use a table format where possible. Highlight actionable insights with \textbf{}.
 
 \section{Healthy Living}
 One practical wellness tip with scientific backing.
 
-\section{Tech News Roundup}
-3-5 top international tech news as \href{url}{headline} items.
+\section{Daily Wisdom \& Love}
+One inspiring quote with attribution, followed by a short sweet personal note (1-2 sentences) to the reader. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
-\section{Political Landscape}
-Key US and international political developments. \href{url}{headline} links.
-
-Search the web for today's ACTUAL news. Use REAL article URLs, not homepages.
-
-FINAL LINE: Output a short sweet personal note (1-2 sentences). Format:
-LOVENOTE: Every morning is brighter knowing I get to share this world with you."""
+Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
 
 LOVE_NOTE_DEFAULT = "Wishing you a beautiful day filled with joy."
 
@@ -296,7 +301,7 @@ def generate_chinese_report(preview: bool = False):
     if preview:
         send_email(to=CONTACTS["cc"], cc="", bcc="", subject=f"[PREVIEW] {subject}", body=body, attachment=str(pdf_path.resolve()))
     else:
-        send_email(to=CONTACTS["primary"], cc=CONTACTS["cc"], bcc=CONTACTS["secondary"], subject=subject, body=body, attachment=str(pdf_path.resolve()))
+        send_email(to=CONTACTS["primary"], cc=CONTACTS["cc"], bcc="", subject=subject, body=body, attachment=str(pdf_path.resolve()))
 
 
 def generate_english_report(preview: bool = False):
@@ -305,15 +310,13 @@ def generate_english_report(preview: bool = False):
     date_str_file = now_la.strftime("%Y-%m-%d")
 
     print(f"Generating English report for {date_str}...")
-    raw_content = sanitize_latex(run_claude(EN_PROMPT))
-    content, love_note = extract_love_note(raw_content)
+    content = sanitize_latex(run_claude(EN_PROMPT))
 
     # Load template
     template = (TEMPLATE_DIR / "english.tex").read_text()
     tex = (template
            .replace("<<DATE>>", date_str)
-           .replace("<<CONTENT>>", content)
-           .replace("<<LOVE_NOTE>>", love_note))
+           .replace("<<CONTENT>>", content))
 
     # Write and compile
     tex_path = OUTPUT_DIR / f"daily_en_{date_str_file}.tex"
@@ -322,7 +325,7 @@ def generate_english_report(preview: bool = False):
     print(f"PDF generated: {pdf_path}")
 
     subject = f"Daily Intelligence Report - {date_str}"
-    body = f"Good morning!\n\nYour daily report is attached.\n\n{love_note}\n\n---\nAuto-generated by mini-claude-bot"
+    body = f"Good morning!\n\nYour daily report is attached.\n\n---\nAuto-generated by mini-claude-bot"
 
     if preview:
         send_email(to=CONTACTS["cc"], cc="", bcc="", subject=f"[PREVIEW] {subject}", body=body, attachment=str(pdf_path.resolve()))

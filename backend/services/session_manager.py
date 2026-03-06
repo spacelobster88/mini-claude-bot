@@ -31,6 +31,7 @@ MEMORY_CHECK_INTERVAL = 10  # seconds between memory checks when waiting
 MEMORY_MAX_WAIT = 300  # max 5 minutes waiting for memory to free up
 MAX_OOM_RETRIES = 3  # max retries when Claude is killed by OOM (exit -15)
 OOM_RETRY_BACKOFF = 15  # base seconds between OOM retries (multiplied by attempt)
+MAX_CLAUDE_PROCESSES = int(os.getenv("GATEWAY_MAX_CLAUDE_PROCESSES", "2"))  # Max concurrent Claude processes
 
 # Messages matching these patterns get no timeout (they can run for hours)
 NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
@@ -90,6 +91,8 @@ class SessionManager:
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
+        self._claude_process_count = 0  # Track concurrent Claude processes
+        self._process_count_lock = threading.Lock()  # Lock for process counter
         self._load_persisted_sessions()
 
     def _get_db(self):
@@ -326,7 +329,24 @@ class SessionManager:
         Memory guardrails:
         - Waits for sufficient free memory before spawning Claude CLI
         - On exit code -15 (SIGTERM / OOM kill), waits and retries automatically
+        - Limits concurrent Claude processes to MAX_CLAUDE_PROCESSES
         """
+        # Check concurrent process limit
+        waited = 0
+        while waited < QUEUE_WAIT_TIMEOUT:
+            with self._process_count_lock:
+                if self._claude_process_count < MAX_CLAUDE_PROCESSES:
+                    self._claude_process_count += 1
+                    break
+            logger.info(
+                "chat_id=%s: Waiting for Claude process slot (%d/%d active)",
+                chat_id, self._claude_process_count, MAX_CLAUDE_PROCESSES
+            )
+            time.sleep(5)
+            waited += 5
+        else:
+            return "[BUSY] Too many concurrent Claude processes. Please try again later."
+
         session = self._get_or_create(chat_id)
 
         # Wait for the session to become free (queue instead of reject)
@@ -420,6 +440,9 @@ class SessionManager:
                 session._proc = None
             session._ready.set()
             self._persist_session(session)
+            # Decrease process count
+            with self._process_count_lock:
+                self._claude_process_count = max(0, self._claude_process_count - 1)
 
     def send_background(self, chat_id: str, message: str, bot_token: str) -> dict:
         """Start a background Claude CLI task for the given chat.
