@@ -80,6 +80,14 @@ RULES:
 
 SECTIONS (use these exact names, in this order):
 
+\section{Tech \& Architecture: AI/ML Deep Dive}
+This section is for interview preparation — focus on KNOWLEDGE and CONCEPTS, NOT news headlines.
+For each of the three topics below, provide one in-depth insight: a key concept, architectural pattern, design trade-off, best practice, or system design principle that would be valuable in a technical interview.
+1. \textbf{AI Infra} — e.g., GPU scheduling strategies, model serving architectures (Triton, vLLM), training parallelism (data/model/pipeline), cost optimization patterns, distributed training frameworks.
+2. \textbf{ML Platform} — e.g., feature store design (online vs offline), model registry patterns, experiment tracking architecture, ML pipeline orchestration (Kubeflow, Metaflow), A/B testing infrastructure.
+3. \textbf{Data Pipeline} — e.g., streaming vs batch trade-offs, exactly-once semantics, data quality frameworks (Great Expectations, Deequ), lakehouse architecture, orchestration patterns (Airflow, Dagster, Prefect).
+Search for recent blog posts, engineering articles, or open-source projects that illustrate these concepts. Explain the WHY and HOW, not just the WHAT. Use \href{url}{title} to cite sources.
+
 \section{US Market Deep Dive}
 S\&P 500, NASDAQ, Dow Jones, notable movers, sector analysis. Real data + \href links.
 
