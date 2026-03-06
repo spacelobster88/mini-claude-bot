@@ -58,8 +58,8 @@ def test_two_chats_concurrent(mock_popen, client):
     assert r2.json()["session_key"] == "chat_b"
 
     # Both have their own DB sessions
-    s1 = client.get("/api/chat/sessions/gw-chat_a").json()
-    s2 = client.get("/api/chat/sessions/gw-chat_b").json()
+    s1 = client.get("/api/chat/sessions/gw-default-chat_a").json()
+    s2 = client.get("/api/chat/sessions/gw-default-chat_b").json()
     assert s1[0]["content"] == "hello from A"
     assert s2[0]["content"] == "hello from B"
 
@@ -159,7 +159,7 @@ def test_session_resume_after_manager_reset(mock_popen, client):
     client.post("/api/gateway/send", json={"chat_id": "resume_test", "message": "first"})
 
     # Get the CWD that was used
-    session = sm_mod._manager._sessions["resume_test"]
+    session = sm_mod._manager._sessions["default:resume_test"]
     cwd = session.cwd
 
     # Create fake JSONL in Claude's project dir to simulate existing session
@@ -229,5 +229,5 @@ def test_group_chat_shared_context(mock_popen, client):
     assert call_args[0][1]["cwd"] == call_args[1][1]["cwd"]
 
     # Both messages in same DB session
-    msgs = client.get(f"/api/chat/sessions/gw-{group_id}").json()
+    msgs = client.get(f"/api/chat/sessions/gw-default-{group_id}").json()
     assert len(msgs) == 4  # 2 user + 2 assistant

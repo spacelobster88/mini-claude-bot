@@ -37,6 +37,24 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_job_runs(job_id);
         CREATE INDEX IF NOT EXISTS idx_cron_runs_started ON cron_job_runs(started_at);
     """),
+    (5, "add bot_id to gateway_sessions for multi-tenant isolation", """
+        CREATE TABLE IF NOT EXISTS gateway_sessions_new (
+            bot_id TEXT NOT NULL DEFAULT 'default',
+            chat_id TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            first_done INTEGER DEFAULT 0,
+            busy INTEGER DEFAULT 0,
+            last_active REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (bot_id, chat_id)
+        );
+        INSERT OR IGNORE INTO gateway_sessions_new (bot_id, chat_id, cwd, first_done, busy, last_active, created_at)
+            SELECT 'default', chat_id, cwd, first_done, busy, last_active, created_at
+            FROM gateway_sessions;
+        DROP TABLE gateway_sessions;
+        ALTER TABLE gateway_sessions_new RENAME TO gateway_sessions;
+        CREATE INDEX IF NOT EXISTS idx_gateway_bot_id ON gateway_sessions(bot_id);
+    """),
 ]
 
 

@@ -259,52 +259,59 @@ def get_metrics() -> dict:
 # ── Gateway Sessions ──────────────────────────────────────────
 
 @mcp.tool()
-def list_gateway_sessions() -> list[dict]:
+def list_gateway_sessions(bot_id: str | None = None) -> list[dict]:
     """List all active gateway sessions (multi-chat Claude CLI sessions).
 
-    Returns session info including chat_id, busy status, idle time.
+    Returns session info including chat_id, bot_id, busy status, idle time.
+
+    Args:
+        bot_id: Optional filter to show only sessions for a specific bot
     """
-    return _get("/gateway/sessions")
+    params = {"bot_id": bot_id} if bot_id else None
+    return _get("/gateway/sessions", params=params)
 
 
 @mcp.tool()
-def stop_gateway_session(chat_id: str) -> dict:
+def stop_gateway_session(chat_id: str, bot_id: str = "default") -> dict:
     """Stop a gateway session and clean up its Claude CLI state.
 
     Args:
         chat_id: The Telegram chat ID of the session to stop
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return _post("/gateway/stop", json={"chat_id": chat_id})
+    return _post("/gateway/stop", json={"chat_id": chat_id, "bot_id": bot_id})
 
 
 @mcp.tool()
-def reset_gateway_session(chat_id: str) -> dict:
+def reset_gateway_session(chat_id: str, bot_id: str = "default") -> dict:
     """Reset a gateway session's state (emergency recovery).
 
     Stops the session, clears Claude CLI state, and allows fresh start.
 
     Args:
         chat_id: The Telegram chat ID of the session to reset
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return _post(f"/gateway/sessions/{chat_id}/reset")
+    return _post(f"/gateway/sessions/{chat_id}/reset", json={"bot_id": bot_id})
 
 
 @mcp.tool()
-async def send_gateway_message(chat_id: str, message: str) -> dict:
+async def send_gateway_message(chat_id: str, message: str, bot_id: str = "default") -> dict:
     """Send a message to a specific chat via the gateway.
 
     Creates a new session if one doesn't exist for this chat_id.
-    Uses Claude CLI with CWD-based isolation per chat.
+    Uses Claude CLI with CWD-based isolation per (bot_id, chat_id).
 
     Args:
         chat_id: The Telegram chat ID to send to
         message: The message/prompt to send to Claude
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return await _post_gateway_async("/gateway/send", json={"chat_id": chat_id, "message": message})
+    return await _post_gateway_async("/gateway/send", json={"chat_id": chat_id, "message": message, "bot_id": bot_id})
 
 
 @mcp.tool()
-def send_background_message(chat_id: str, message: str, bot_token: str) -> dict:
+def send_background_message(chat_id: str, message: str, bot_token: str, bot_id: str = "default") -> dict:
     """Send a message to run in the background (non-blocking).
 
     For long-running tasks like harness loops that shouldn't block the main chat.
@@ -314,18 +321,20 @@ def send_background_message(chat_id: str, message: str, bot_token: str) -> dict:
         chat_id: The Telegram chat ID
         message: The message/prompt to send to Claude
         bot_token: Telegram bot token for sending results back
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return _post("/gateway/send-background", json={"chat_id": chat_id, "message": message, "bot_token": bot_token})
+    return _post("/gateway/send-background", json={"chat_id": chat_id, "message": message, "bot_token": bot_token, "bot_id": bot_id})
 
 
 @mcp.tool()
-def get_background_status(chat_id: str) -> dict:
+def get_background_status(chat_id: str, bot_id: str = "default") -> dict:
     """Get the status of a background task for a chat.
 
     Args:
         chat_id: The Telegram chat ID to check
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
     """
-    return _get(f"/gateway/background-status/{chat_id}")
+    return _get(f"/gateway/background-status/{chat_id}", params={"bot_id": bot_id})
 
 
 if __name__ == "__main__":

@@ -75,6 +75,7 @@ def _make_set_event() -> threading.Event:
 class GatewaySession:
     chat_id: str
     cwd: str
+    bot_id: str = "default"
     first_done: bool = False
     busy: bool = False
     busy_since: float = 0.0
@@ -105,6 +106,11 @@ class SessionManager:
         from backend.db.engine import db_write_lock
         return db_write_lock()
 
+    @staticmethod
+    def _session_key(bot_id: str, chat_id: str) -> str:
+        """Composite key for session dict: '{bot_id}:{chat_id}'."""
+        return f"{bot_id}:{chat_id}"
+
     def _load_persisted_sessions(self):
         """Load sessions from DB on startup. Reset busy flags (stale from crash)."""
         try:
@@ -113,16 +119,19 @@ class SessionManager:
             for row in rows:
                 row = dict(row)
                 cwd = row["cwd"]
+                bot_id = row.get("bot_id", "default") or "default"
                 os.makedirs(cwd, exist_ok=True)
                 session = GatewaySession(
                     chat_id=row["chat_id"],
                     cwd=cwd,
+                    bot_id=bot_id,
                     first_done=bool(row["first_done"]),
                     busy=False,  # always reset on startup
                     last_active=row["last_active"],
                 )
-                self._sessions[row["chat_id"]] = session
-                logger.info("Restored session chat_id=%s from DB", row["chat_id"])
+                key = self._session_key(bot_id, row["chat_id"])
+                self._sessions[key] = session
+                logger.info("Restored session bot_id=%s chat_id=%s from DB", bot_id, row["chat_id"])
         except Exception as e:
             # Table might not exist yet on first run
             logger.debug("Could not load persisted sessions: %s", e)
@@ -134,21 +143,24 @@ class SessionManager:
             with self._get_write_lock():
                 db.execute(
                     """INSERT OR REPLACE INTO gateway_sessions
-                       (chat_id, cwd, first_done, busy, last_active)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (session.chat_id, session.cwd, int(session.first_done),
-                     int(session.busy), session.last_active),
+                       (chat_id, bot_id, cwd, first_done, busy, last_active)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (session.chat_id, session.bot_id, session.cwd,
+                     int(session.first_done), int(session.busy), session.last_active),
                 )
                 db.commit()
         except Exception as e:
             logger.debug("Could not persist session: %s", e)
 
-    def _delete_persisted_session(self, chat_id: str) -> None:
+    def _delete_persisted_session(self, chat_id: str, bot_id: str = "default") -> None:
         """Remove session from DB. Thread-safe."""
         try:
             db = self._get_db()
             with self._get_write_lock():
-                db.execute("DELETE FROM gateway_sessions WHERE chat_id = ?", (chat_id,))
+                db.execute(
+                    "DELETE FROM gateway_sessions WHERE chat_id = ? AND bot_id = ?",
+                    (chat_id, bot_id),
+                )
                 db.commit()
         except Exception as e:
             logger.debug("Could not delete persisted session: %s", e)
@@ -183,20 +195,21 @@ class SessionManager:
         except Exception:
             pass
 
-    def _get_or_create(self, chat_id: str) -> GatewaySession:
+    def _get_or_create(self, chat_id: str, bot_id: str = "default") -> GatewaySession:
+        key = self._session_key(bot_id, chat_id)
         with self._global_lock:
-            if chat_id not in self._sessions:
-                cwd = os.path.join(SESSION_BASE_DIR, chat_id)
+            if key not in self._sessions:
+                cwd = os.path.join(SESSION_BASE_DIR, bot_id, chat_id)
                 os.makedirs(cwd, exist_ok=True)
-                session = GatewaySession(chat_id=chat_id, cwd=cwd)
+                session = GatewaySession(chat_id=chat_id, cwd=cwd, bot_id=bot_id)
                 session.first_done = self._has_existing_claude_session(cwd)
-                self._sessions[chat_id] = session
+                self._sessions[key] = session
                 self._persist_session(session)
                 logger.info(
-                    "Created session chat_id=%s cwd=%s first_done=%s",
-                    chat_id, cwd, session.first_done,
+                    "Created session bot_id=%s chat_id=%s cwd=%s first_done=%s",
+                    bot_id, chat_id, cwd, session.first_done,
                 )
-            return self._sessions[chat_id]
+            return self._sessions[key]
 
     def _kill_process(self, proc: subprocess.Popen) -> None:
         """Forcefully kill a subprocess and all its children."""
@@ -339,7 +352,7 @@ class SessionManager:
 
         return (proc.returncode, stdout.strip() if stdout else "", stderr.strip() if stderr else "")
 
-    def send(self, chat_id: str, message: str) -> str:
+    def send(self, chat_id: str, message: str, bot_id: str = "default") -> str:
         """Send a message to Claude CLI for the given chat. Blocking call.
 
         If the session is busy, queues and waits (up to QUEUE_WAIT_TIMEOUT)
@@ -366,7 +379,7 @@ class SessionManager:
         else:
             return "[BUSY] Too many concurrent Claude processes. Please try again later."
 
-        session = self._get_or_create(chat_id)
+        session = self._get_or_create(chat_id, bot_id=bot_id)
 
         # Wait for the session to become free (queue instead of reject)
         if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
@@ -463,7 +476,7 @@ class SessionManager:
             with self._process_count_lock:
                 self._claude_process_count = max(0, self._claude_process_count - 1)
 
-    def send_background(self, chat_id: str, message: str, bot_token: str) -> dict:
+    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default") -> dict:
         """Start a background Claude CLI task for the given chat.
 
         Uses a separate session (bg-{chat_id}) so it doesn't interfere with
@@ -471,9 +484,10 @@ class SessionManager:
         task per chat_id is allowed at a time. Sends the result to Telegram
         via bot API on completion.
         """
+        bg_key = self._session_key(bot_id, chat_id)
         # Check if a background task is already running for this chat_id
         with self._global_lock:
-            existing = self._bg_tasks.get(chat_id)
+            existing = self._bg_tasks.get(bg_key)
             if existing and existing["status"] == "running":
                 thread = existing.get("thread")
                 if thread and thread.is_alive():
@@ -494,8 +508,8 @@ class SessionManager:
 
         bg_session_key = f"bg-{chat_id}"
         # Share CWD with main session so background work is visible to main chat
-        main_session = self._get_or_create(chat_id)
-        bg_session = self._get_or_create(bg_session_key)
+        main_session = self._get_or_create(chat_id, bot_id=bot_id)
+        bg_session = self._get_or_create(bg_session_key, bot_id=bot_id)
         if bg_session.cwd != main_session.cwd:
             bg_session.cwd = main_session.cwd
             self._persist_session(bg_session)
@@ -509,11 +523,11 @@ class SessionManager:
             "status": "running",
             "result": None,
         }
-        self._bg_tasks[chat_id] = task_info
+        self._bg_tasks[bg_key] = task_info
 
         def _run():
             try:
-                result = self.send(bg_session_key, message)
+                result = self.send(bg_session_key, message, bot_id=bot_id)
                 task_info["status"] = "completed"
                 task_info["result"] = result[:500] if result else ""
             except Exception as e:
@@ -562,9 +576,10 @@ class SessionManager:
                     chat_id, e,
                 )
 
-    def get_background_status(self, chat_id: str) -> dict:
+    def get_background_status(self, chat_id: str, bot_id: str = "default") -> dict:
         """Return the current background task info for this chat_id."""
-        task = self._bg_tasks.get(chat_id)
+        bg_key = self._session_key(bot_id, chat_id)
+        task = self._bg_tasks.get(bg_key)
         if task is None:
             return {"status": "idle"}
 
@@ -586,40 +601,45 @@ class SessionManager:
             "elapsed_seconds": elapsed,
         }
 
-    def stop_session(self, chat_id: str) -> bool:
+    def stop_session(self, chat_id: str, bot_id: str = "default") -> bool:
         """Stop and clean up a session, killing any running process."""
+        key = self._session_key(bot_id, chat_id)
         with self._global_lock:
-            session = self._sessions.pop(chat_id, None)
+            session = self._sessions.pop(key, None)
             if session is None:
                 return False
 
         # Kill any running Claude CLI process
         with session.lock:
             if session._proc and session._proc.poll() is None:
-                logger.info("Killing running process for chat_id=%s", chat_id)
+                logger.info("Killing running process for bot_id=%s chat_id=%s", bot_id, chat_id)
                 self._kill_process(session._proc)
                 session._proc = None
             session.busy = False
         session._ready.set()  # wake up any queued messages
 
         self._cleanup_session_files(session)
-        self._delete_persisted_session(chat_id)
-        logger.info("Stopped session chat_id=%s", chat_id)
+        self._delete_persisted_session(chat_id, bot_id=bot_id)
+        logger.info("Stopped session bot_id=%s chat_id=%s", bot_id, chat_id)
         return True
 
-    def list_sessions(self) -> list[dict]:
+    def list_sessions(self, bot_id: str | None = None) -> list[dict]:
         with self._global_lock:
             now = time.time()
+            sessions = self._sessions.values()
+            if bot_id is not None:
+                sessions = [s for s in sessions if s.bot_id == bot_id]
             return [
                 {
                     "chat_id": s.chat_id,
+                    "bot_id": s.bot_id,
                     "busy": s.busy,
                     "first_done": s.first_done,
                     "last_active": s.last_active,
                     "idle_seconds": int(now - s.last_active),
                     "busy_seconds": int(now - s.busy_since) if s.busy else 0,
                 }
-                for s in self._sessions.values()
+                for s in sessions
             ]
 
     def start_cleanup_loop(self):
@@ -652,7 +672,7 @@ class SessionManager:
         # Clean up files and DB outside the lock
         for session in removed_sessions:
             self._cleanup_session_files(session)
-            self._delete_persisted_session(session.chat_id)
+            self._delete_persisted_session(session.chat_id, bot_id=session.bot_id)
 
     def _recover_stuck_sessions(self):
         """Auto-recover sessions stuck in busy state beyond the timeout."""

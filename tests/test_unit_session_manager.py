@@ -47,8 +47,8 @@ def test_create_session(manager, tmp_session_dir):
         result = manager.send("chat123", "hi")
 
     assert result == "hello"
-    assert "chat123" in manager._sessions
-    assert os.path.isdir(os.path.join(str(tmp_session_dir), "chat123"))
+    assert "default:chat123" in manager._sessions
+    assert os.path.isdir(os.path.join(str(tmp_session_dir), "default", "chat123"))
 
 
 def test_session_reuse(manager):
@@ -78,7 +78,7 @@ def test_stop_session(manager):
         manager.send("chat1", "hi")
 
     assert manager.stop_session("chat1") is True
-    assert "chat1" not in manager._sessions
+    assert "default:chat1" not in manager._sessions
 
 
 def test_stop_nonexistent(manager):
@@ -164,7 +164,7 @@ def test_busy_cleared_after_error(manager):
     with patch("backend.services.session_manager.subprocess.Popen", side_effect=error_popen):
         manager.send("chat1", "hi")
 
-    session = manager._sessions["chat1"]
+    session = manager._sessions["default:chat1"]
     assert session.busy is False
 
 
@@ -172,7 +172,7 @@ def test_busy_cleared_after_error(manager):
 
 def test_first_done_from_existing_jsonl(manager, tmp_session_dir):
     """If Claude has existing session files for CWD, first_done is True."""
-    cwd = os.path.join(str(tmp_session_dir), "chat_resume")
+    cwd = os.path.join(str(tmp_session_dir), "default", "chat_resume")
     mangled = cwd.replace("/", "-")
     session_dir = Path.home() / ".claude" / "projects" / mangled
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -225,12 +225,12 @@ def test_cleanup_removes_idle_sessions(manager):
         manager.send("idle_chat", "hi")
 
     # Artificially age the session
-    manager._sessions["idle_chat"].last_active = time.time() - 99999
+    manager._sessions["default:idle_chat"].last_active = time.time() - 99999
 
     with patch("backend.services.session_manager.SESSION_IDLE_TIMEOUT", 100):
         manager._cleanup_idle()
 
-    assert "idle_chat" not in manager._sessions
+    assert "default:idle_chat" not in manager._sessions
 
 
 def test_cleanup_keeps_active_sessions(manager):
@@ -239,7 +239,7 @@ def test_cleanup_keeps_active_sessions(manager):
         manager.send("active_chat", "hi")
 
     manager._cleanup_idle()
-    assert "active_chat" in manager._sessions
+    assert "default:active_chat" in manager._sessions
 
 
 def test_cleanup_skips_busy_sessions(manager):
@@ -252,7 +252,7 @@ def test_cleanup_skips_busy_sessions(manager):
     with patch("backend.services.session_manager.SESSION_IDLE_TIMEOUT", 100):
         manager._cleanup_idle()
 
-    assert "busy_chat" in manager._sessions
+    assert "default:busy_chat" in manager._sessions
 
 
 # ── Stuck recovery ───────────────────────────────────────────────

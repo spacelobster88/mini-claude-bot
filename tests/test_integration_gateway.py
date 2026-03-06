@@ -66,14 +66,14 @@ def test_send_stores_messages_in_db(mock_popen, client):
         "message": "user message",
     })
 
-    # Messages should be in DB under session_id = gw-67890
-    r = client.get("/api/chat/sessions/gw-67890")
+    # Messages should be in DB under session_id = gw-default-67890
+    r = client.get("/api/chat/sessions/gw-default-67890")
     assert r.status_code == 200
     msgs = r.json()
     assert len(msgs) == 2
     assert msgs[0]["role"] == "user"
     assert msgs[0]["content"] == "user message"
-    assert msgs[0]["session_id"] == "gw-67890"
+    assert msgs[0]["session_id"] == "gw-default-67890"
     assert msgs[1]["role"] == "assistant"
     assert msgs[1]["content"] == "response text"
 
@@ -87,7 +87,7 @@ def test_send_stores_telegram_chat_id(mock_popen, client):
         "message": "test",
     })
 
-    r = client.get("/api/chat/sessions/gw-99999")
+    r = client.get("/api/chat/sessions/gw-default-99999")
     msgs = r.json()
     assert msgs[0]["telegram_chat_id"] == 99999
 
@@ -114,8 +114,8 @@ def test_send_multiple_chats_isolated(mock_popen, client):
     client.post("/api/gateway/send", json={"chat_id": "aaa", "message": "msg1"})
     client.post("/api/gateway/send", json={"chat_id": "bbb", "message": "msg2"})
 
-    r1 = client.get("/api/chat/sessions/gw-aaa")
-    r2 = client.get("/api/chat/sessions/gw-bbb")
+    r1 = client.get("/api/chat/sessions/gw-default-aaa")
+    r2 = client.get("/api/chat/sessions/gw-default-bbb")
     assert len(r1.json()) == 2
     assert len(r2.json()) == 2
     assert r1.json()[0]["content"] == "msg1"
@@ -129,7 +129,7 @@ def test_send_error_marked_with_source(mock_popen, client):
 
     client.post("/api/gateway/send", json={"chat_id": "err_test", "message": "hi"})
 
-    r = client.get("/api/chat/sessions/gw-err_test")
+    r = client.get("/api/chat/sessions/gw-default-err_test")
     msgs = r.json()
     assistant_msg = msgs[1]
     assert "[ERROR]" in assistant_msg["content"]
