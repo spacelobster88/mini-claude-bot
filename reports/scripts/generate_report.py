@@ -73,11 +73,11 @@ EN_PROMPT = r"""Generate a BILINGUAL (English-Chinese) daily report as LaTeX bod
 CRITICAL: Output RAW LaTeX ONLY. No markdown, no code blocks, no explanations, no notes. Start directly with \section and end with the LOVENOTE line. Nothing else.
 
 LANGUAGE RULES PER SECTION — follow these STRICTLY:
-- Career Growth: English paragraphs 1-3 are ENGLISH ONLY. Paragraph 4 is CHINESE ONLY.
-- Politics \& Economics: ENGLISH ONLY. No Chinese at all.
-- Stock Watch: CHINESE ONLY. No English at all. No \begin{cntranslation}.
-- Healthy Life: CHINESE ONLY. No English at all. No \begin{cntranslation}.
 - Wisdom \& Love: ENGLISH ONLY. No Chinese at all. No \begin{cntranslation}.
+- Stock Watch: CHINESE ONLY. No English at all. No \begin{cntranslation}.
+- Politics \& Economics: ENGLISH ONLY. No Chinese at all.
+- Healthy Life: CHINESE ONLY. No English at all. No \begin{cntranslation}.
+- Career Growth: English paragraphs 1-3 are ENGLISH ONLY. Paragraph 4 is CHINESE ONLY.
 
 RULES:
 - No \documentclass, \begin{document}, \end{document}
@@ -88,6 +88,19 @@ RULES:
 
 SECTIONS (use these exact names, in this order):
 
+\section{Wisdom \& Love}
+One inspiring quote with attribution. Then on the next line, write a short sweet personal love note (1-2 sentences) in pink using \textcolor{heartpink}{...}. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+
+\section{Stock Watch}
+我持有以下股票：ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
+从中挑出最多5个你认为今天最值得关注/操作的股票（可以少于5个）。用bullet point格式。每个股票格式统一为：股票代码（当前价格, 当日涨跌幅%）— 建议。然后给出机构目标价和一句话理由。确保每只股票都有当前价格和涨跌幅，格式一致。只用中文，不需要英文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
+
+\section{Politics \& Economics}
+Pick the TOP 3 most important US and international political/economic news of the day. Use bullet points (\\begin{itemize}), NOT numbered lists. Each item: \href{url}{headline} followed by ONE sentence summary only — no extra details or elaboration. Only 3 items, no more. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
+
+\section{Healthy Life}
+给出三条健康建议，每条不超过三句话。第一条「今日晚餐🍽️」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑制作时间和复杂度，只需要营养均衡健康。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练🧘🏻‍♀️」：一条针对改善驼背、腰痛、体态的通用小建议（不超过三句话），然后搜索YouTube找一个10-15分钟的改善驼背/腰痛/体态的跟练视频，用\href{url}{视频标题}附上链接。每天推荐不同的视频。第三条「健康小贴士🥦」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
+
 \section{Career Growth}
 Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approach: start from the big picture (what is the system, what problem does it solve, how the pieces fit together) before zooming into details. Think system-level and architecture-level, not scattered trivia. Start from beginner-level concepts first; do NOT pick advanced topics unless requested. For each keyword, write ~50 words in English. Keep it clear, memorable, and practical. Use everyday analogies. No diagrams or images. The 3 English paragraphs are ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation for them.
 1. \textbf{AI Infra} — Start top-down: the overall ML compute stack (hardware → framework → serving), then progressively cover each layer. e.g., Why GPU for ML → training pipeline architecture → model serving system → optimization techniques.
@@ -95,19 +108,6 @@ Pick ONE keyword/concept from each of the 3 topics below. Use a TOP-DOWN approac
 3. \textbf{Data Pipeline} — Start top-down: how data flows from source to insight, then progressively cover each stage. e.g., Data architecture overview → ingestion → storage → transformation → serving.
 Use \href{url}{title} to cite one source per topic if relevant.
 4. \textbf{程序员职场小技巧} — 用中文写三句话，讲一个实用的程序员职场生存/成长技巧。话题可以包括：如何跟PM沟通、code review技巧、向上管理、面试准备、时间管理、职业发展等。This paragraph is CHINESE ONLY.
-
-\section{Politics \& Economics}
-Pick the TOP 3 most important US and international political/economic news of the day. Use bullet points (\\begin{itemize}), NOT numbered lists. Each item: \href{url}{headline} followed by ONE sentence summary only — no extra details or elaboration. Only 3 items, no more. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
-
-\section{Stock Watch}
-我持有以下股票：ORCL (8), MSFT (5), AVGO (2), INTC (6), TSLA (2.5), NFLX (1), PLTR (4), NVDA (0.1), MU (0.4), GOOGL (8.2), META (3), COIN (7.5), ISRG (8).
-从中挑出最多5个你认为今天最值得关注/操作的股票（可以少于5个）。用bullet point格式。每个股票格式统一为：股票代码（当前价格, 当日涨跌幅%）— 建议。然后给出机构目标价和一句话理由。确保每只股票都有当前价格和涨跌幅，格式一致。只用中文，不需要英文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
-
-\section{Healthy Life}
-给出三条健康建议，每条不超过三句话。第一条「今日晚餐🍽️」：给两个选项。Option A中餐：每天给五个菜名，只写菜名不写做法，不需要考虑制作时间和复杂度，只需要营养均衡健康。Option B非中餐（美国菜、意大利菜、印度菜等，要在家容易做的）：写明菜名、主要食材和简单做法。周一到周五简单快手相对健康，周六周日丰盛复杂不必考虑健康。第二条「每日一练🧘🏻‍♀️」：一条针对改善驼背、腰痛、体态的通用小建议（不超过三句话），然后搜索YouTube找一个10-15分钟的改善驼背/腰痛/体态的跟练视频，用\href{url}{视频标题}附上链接。每天推荐不同的视频。第三条「健康小贴士🥦」：一条通用的健康生活建议。只用中文。This section is CHINESE ONLY — do NOT include English text or \begin{cntranslation}.
-
-\section{Wisdom \& Love}
-One inspiring quote with attribution. Then on the next line, write a short sweet personal love note (1-2 sentences) in pink using \textcolor{heartpink}{...}. This section is ENGLISH ONLY — do NOT include \begin{cntranslation} Chinese translation.
 
 Search the web for today's ACTUAL news. Use REAL article URLs, not homepages."""
 
