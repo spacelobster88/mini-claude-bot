@@ -36,6 +36,11 @@ MAX_CLAUDE_PROCESSES = int(os.getenv("GATEWAY_MAX_CLAUDE_PROCESSES", "2"))  # Ma
 # Messages matching these patterns get no timeout (they can run for hours)
 NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
 
+# Background task sessions (chat_id starts with "bg-") inherit no timeout
+def _is_background_session(chat_id: str) -> bool:
+    """Check if this is a background task session."""
+    return chat_id.startswith("bg-")
+
 
 def _get_available_memory_mb() -> int:
     """Get available memory in MB using macOS vm_stat.
@@ -326,9 +331,15 @@ class SessionManager:
         with session.lock:
             session._proc = proc
 
-        timeout = None if self._is_no_timeout_message(message) else CLAUDE_TIMEOUT
+        # No timeout for background sessions (chat_id starts with "bg-")
+        is_background = _is_background_session(session.chat_id)
+        is_long_message = self._is_no_timeout_message(message)
+
+        timeout = None if (is_background or is_long_message) else CLAUDE_TIMEOUT
+
         if timeout is None:
-            logger.info("chat_id=%s: no timeout (long-running message detected)", session.chat_id)
+            reason = "background session" if is_background else "long-running message"
+            logger.info("chat_id=%s: no timeout (%s)", session.chat_id, reason)
 
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
