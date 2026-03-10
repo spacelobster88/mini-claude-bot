@@ -324,7 +324,7 @@ def generate_chinese_report(preview: bool = False):
     plain = re.sub(r"\n{3,}", "\n\n", plain)
 
     subject = f"每日智能报告 - {date_str}"
-    body = f"每日智能报告 - {date_str}\n\n{plain.strip()}\n\n---\n由 mini-claude-bot 自动生成"
+    body = f"童总您好，\n\n每日智能报告 - {date_str}\n\n{plain.strip()}\n\n祝童总和夫人身体健康、生意兴隆、万事如意\n\n---\n由 mini-claude-bot 自动生成"
 
     if preview:
         send_email(to=CONTACTS["cc"], cc="", bcc="", subject=f"[PREVIEW] {subject}", body=body, attachment=str(pdf_path.resolve()))
