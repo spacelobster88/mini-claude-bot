@@ -143,21 +143,31 @@ class SessionManager:
             db = self._get_db()
             rows = db.execute("SELECT * FROM gateway_sessions").fetchall()
             for row in rows:
-                row = dict(row)
-                cwd = row["cwd"]
-                bot_id = row.get("bot_id", "default") or "default"
-                os.makedirs(cwd, exist_ok=True)
-                session = GatewaySession(
-                    chat_id=row["chat_id"],
-                    cwd=cwd,
-                    bot_id=bot_id,
-                    first_done=bool(row["first_done"]),
-                    busy=False,  # always reset on startup
-                    last_active=row["last_active"],
-                )
-                key = self._session_key(bot_id, row["chat_id"])
-                self._sessions[key] = session
-                logger.info("Restored session bot_id=%s chat_id=%s from DB", bot_id, row["chat_id"])
+                try:
+                    row = dict(row)
+                    cwd = row["cwd"]
+                    bot_id = row.get("bot_id", "default") or "default"
+
+                    # Check if CWD still exists, if not, skip this session
+                    if not os.path.exists(cwd):
+                        logger.debug("Session CWD no longer exists, skipping: %s", cwd)
+                        # Clean up the stale DB record
+                        self._delete_persisted_session(row["chat_id"], bot_id)
+                        continue
+
+                    session = GatewaySession(
+                        chat_id=row["chat_id"],
+                        cwd=cwd,
+                        bot_id=bot_id,
+                        first_done=bool(row["first_done"]),
+                        busy=False,  # always reset on startup
+                        last_active=row["last_active"],
+                    )
+                    key = self._session_key(bot_id, row["chat_id"])
+                    self._sessions[key] = session
+                    logger.info("Restored session bot_id=%s chat_id=%s from DB", bot_id, row["chat_id"])
+                except Exception as e:
+                    logger.warning("Could not restore session %s: %s", row.get("chat_id"), e)
         except Exception as e:
             # Table might not exist yet on first run
             logger.debug("Could not load persisted sessions: %s", e)
@@ -205,8 +215,16 @@ class SessionManager:
 
         Claude CLI resolves symlinks, so /tmp → /private/tmp on macOS.
         """
-        resolved = str(Path(cwd).resolve())
-        return resolved.replace("/", "-")
+        try:
+            # Check if cwd exists before resolving
+            if not os.path.exists(cwd):
+                logger.debug("CWD does not exist for mangling: %s", cwd)
+                return "unknown"
+            resolved = str(Path(cwd).resolve())
+            return resolved.replace("/", "-")
+        except Exception as e:
+            logger.debug("Error mangling CWD %s: %s", cwd, e)
+            return "unknown"
 
     def _cleanup_session_files(self, session: GatewaySession) -> None:
         """Clean up CWD directory and Claude CLI session files."""
@@ -311,14 +329,26 @@ class SessionManager:
         Since Claude CLI in -p mode has no tool access, we prepend key state
         files so Claude is aware of active projects in the session's CWD.
         """
+        # Check if CWD exists before accessing it
+        if not os.path.exists(session.cwd):
+            logger.debug("Session CWD does not exist, skipping context: %s", session.cwd)
+            return message
+
         context_parts = []
-        harness_dir = Path(session.cwd) / ".harness"
-        if harness_dir.exists():
-            for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
-                fp = harness_dir / name
-                if fp.exists():
-                    content = fp.read_text()[:max_len]
-                    context_parts.append(f"[.harness/{name}]:\n{content}")
+        try:
+            harness_dir = Path(session.cwd) / ".harness"
+            if harness_dir.exists():
+                for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
+                    fp = harness_dir / name
+                    if fp.exists():
+                        try:
+                            content = fp.read_text()[:max_len]
+                            context_parts.append(f"[.harness/{name}]:\n{content}")
+                        except Exception as e:
+                            logger.debug("Could not read .harness file %s: %s", name, e)
+        except Exception as e:
+            logger.debug("Error accessing harness directory: %s", e)
+
         if not context_parts:
             return message
         prefix = "Active project state in working directory:\n" + "\n\n".join(context_parts)
