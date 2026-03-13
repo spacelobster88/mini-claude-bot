@@ -1110,7 +1110,29 @@ class SessionManager:
                 with session.lock:
                     if session.busy and session.busy_since > 0:
                         stuck_duration = now - session.busy_since
-                        if stuck_duration > BUSY_STUCK_TIMEOUT:
+                        # ✅ Check if this is a background task before killing
+                        is_bg = _is_background_session(session.chat_id)
+
+                        # ✅ Only kill foreground tasks that are stuck
+                        if not is_bg and stuck_duration > BUSY_STUCK_TIMEOUT:
+                                logger.warning(
+                                    "Auto-recovering stuck session bot_id=%s chat_id=%s (busy for %ds)",
+                                    session.bot_id, session.chat_id, int(stuck_duration),
+                                )
+                                # Kill any lingering process
+                                if session._proc and session._proc.poll() is None:
+                                    self._kill_process(session._proc)
+                                    session._proc = None
+                                session.busy = False
+                                session.busy_since = 0.0
+                            else:
+                                # ⚠️ Background task: Skip killing, let it run
+                                logger.debug(
+                                    "Skipping background session bot_id=%s chat_id=%s (stuck for %ds)",
+                                    session.bot_id, session.chat_id, int(stuck_duration),
+                                )
+                        else:
+                            # ✅ Foreground task or not stuck: Kill and recover
                             logger.warning(
                                 "Auto-recovering stuck session bot_id=%s chat_id=%s (busy for %ds)",
                                 session.bot_id, session.chat_id, int(stuck_duration),
