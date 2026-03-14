@@ -131,7 +131,12 @@ async def gateway_send_stream(req: SendRequest):
     async def _generate():
         nonlocal full_response
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=330)
+            except asyncio.TimeoutError:
+                timeout_event = {"type": "error", "content": "Stream timeout"}
+                yield f"data: {json.dumps(timeout_event)}\n\n"
+                break
             if event is None:
                 break
             if event.get("type") == "done":

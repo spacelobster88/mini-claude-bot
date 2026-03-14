@@ -409,11 +409,10 @@ class SessionManager:
             "--output-format", "text",
             "--dangerously-skip-permissions",
         ]
+        prompt = self._inject_context(session, message)
         if session.first_done:
             args.append("--continue")
-            args.append(message)
-        else:
-            args.append(self._inject_context(session, message))
+        args.append(prompt)
 
         proc = subprocess.Popen(
             args,
@@ -480,11 +479,10 @@ class SessionManager:
             "--verbose",
             "--dangerously-skip-permissions",
         ]
+        prompt = self._inject_context(session, message)
         if session.first_done:
             args.append("--continue")
-            args.append(message)
-        else:
-            args.append(self._inject_context(session, message))
+        args.append(prompt)
 
         proc = subprocess.Popen(
             args,
@@ -773,14 +771,6 @@ class SessionManager:
             return
 
         session = self._get_or_create(chat_id, bot_id=bot_id)
-
-        # Wait for the session to become free (queue instead of reject)
-        if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
-            # Release process slot since we never started
-            with self._process_count_lock:
-                self._claude_process_count = max(0, self._claude_process_count - 1)
-            yield {"type": "error", "content": "Timed out waiting in queue. The previous message is still processing."}
-            return
 
         with session.lock:
             if session.busy:
