@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-sessions")
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
-CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "900"))  # 15 minutes
-BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "300"))  # 5 minutes (was 30m, too long)
-QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "1800"))  # max 30min wait in queue
+CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "180"))  # 3 minutes for normal chat
+BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "240"))  # 4 minutes safety net (must exceed CLAUDE_TIMEOUT)
+QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "120"))  # max 2 min wait in queue
 
 # Memory guardrails
 MEMORY_MIN_FREE_MB = int(os.getenv("GATEWAY_MIN_FREE_MB", "512"))  # 512MB minimum free before spawning
@@ -239,6 +239,32 @@ class SessionManager:
         except Exception:
             pass
 
+    def _prune_session_history(self, session: GatewaySession, keep: int = 2) -> None:
+        """Delete old Claude CLI session JSONL files, keeping only the most recent ones.
+
+        Each `claude -p` call creates a new .jsonl file. With --continue these
+        accumulate forever, bloating the project directory and slowing down
+        session resume. This keeps only the latest `keep` files.
+        """
+        mangled = self._mangle_cwd(session.cwd)
+        if mangled == "unknown":
+            return
+        session_dir = Path.home() / ".claude" / "projects" / mangled
+        if not session_dir.exists():
+            return
+        try:
+            jsonl_files = sorted(
+                session_dir.glob("*.jsonl"),
+                key=lambda f: f.stat().st_mtime,
+            )
+            if len(jsonl_files) <= keep:
+                return
+            for old_file in jsonl_files[:-keep]:
+                old_file.unlink(missing_ok=True)
+                logger.info("Pruned old session file: %s", old_file.name)
+        except Exception as e:
+            logger.debug("Failed to prune session history: %s", e)
+
     def _get_or_create(self, chat_id: str, bot_id: str = "default") -> GatewaySession:
         key = self._session_key(bot_id, chat_id)
         with self._global_lock:
@@ -367,7 +393,9 @@ class SessionManager:
         ]
         if session.first_done:
             args.append("--continue")
-        args.append(self._inject_context(session, message))
+            args.append(message)
+        else:
+            args.append(self._inject_context(session, message))
 
         proc = subprocess.Popen(
             args,
@@ -411,6 +439,10 @@ class SessionManager:
                 "chat_id=%s stderr (rc=%d): %s",
                 session.chat_id, proc.returncode, stderr.strip()[:500],
             )
+
+        # Prune old session files to prevent unbounded growth
+        if proc.returncode == 0:
+            self._prune_session_history(session)
 
         return (proc.returncode, stdout.strip() if stdout else "", stderr.strip() if stderr else "")
 
@@ -1110,40 +1142,26 @@ class SessionManager:
                 with session.lock:
                     if session.busy and session.busy_since > 0:
                         stuck_duration = now - session.busy_since
-                        # ✅ Check if this is a background task before killing
                         is_bg = _is_background_session(session.chat_id)
 
-                        # ✅ Only kill foreground tasks that are stuck
-                        if not is_bg and stuck_duration > BUSY_STUCK_TIMEOUT:
-                                logger.warning(
-                                    "Auto-recovering stuck session bot_id=%s chat_id=%s (busy for %ds)",
-                                    session.bot_id, session.chat_id, int(stuck_duration),
-                                )
-                                # Kill any lingering process
-                                if session._proc and session._proc.poll() is None:
-                                    self._kill_process(session._proc)
-                                    session._proc = None
-                                session.busy = False
-                                session.busy_since = 0.0
-                            else:
-                                # ⚠️ Background task: Skip killing, let it run
-                                logger.debug(
-                                    "Skipping background session bot_id=%s chat_id=%s (stuck for %ds)",
-                                    session.bot_id, session.chat_id, int(stuck_duration),
-                                )
-                        else:
-                            # ✅ Foreground task or not stuck: Kill and recover
+                        if is_bg:
+                            # Background sessions: never kill via cleanup thread
+                            logger.debug(
+                                "Skipping background session bot_id=%s chat_id=%s (busy for %ds)",
+                                session.bot_id, session.chat_id, int(stuck_duration),
+                            )
+                        elif stuck_duration > BUSY_STUCK_TIMEOUT:
+                            # Foreground session stuck beyond timeout: kill and recover
                             logger.warning(
                                 "Auto-recovering stuck session bot_id=%s chat_id=%s (busy for %ds)",
                                 session.bot_id, session.chat_id, int(stuck_duration),
                             )
-                            # Kill any lingering process
                             if session._proc and session._proc.poll() is None:
                                 self._kill_process(session._proc)
                                 session._proc = None
                             session.busy = False
                             session.busy_since = 0.0
-                            session._ready.set()  # wake up any queued messages
+                            session._ready.set()
 
 
 # Module-level singleton
