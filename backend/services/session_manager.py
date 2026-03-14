@@ -34,7 +34,7 @@ OOM_RETRY_BACKOFF = 15  # base seconds between OOM retries (multiplied by attemp
 MAX_CLAUDE_PROCESSES = int(os.getenv("GATEWAY_MAX_CLAUDE_PROCESSES", "2"))  # Max concurrent Claude processes
 
 # Messages matching these patterns get no timeout (they can run for hours)
-NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
+NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop", "后台模式", "后台运行", "后台执行"]
 
 # Background task sessions (chat_id starts with "bg-") inherit no timeout
 def _is_background_session(chat_id: str) -> bool:
@@ -356,7 +356,7 @@ class SessionManager:
 
         # Check Centurion status for harness-loop messages
         msg_lower = message.lower()
-        if any(kw in msg_lower for kw in ["harness", "centurion"]):
+        if any(kw in msg_lower for kw in ["harness", "后台模式", "后台运行", "后台执行"]):
             try:
                 import httpx
                 centurion_port = os.getenv("CENTURION_PORT", "8100")
@@ -376,7 +376,7 @@ class SessionManager:
             except Exception as e:
                 context_parts.append(f"[Centurion Status]: NOT RUNNING (localhost:{centurion_port}) - {e}")
 
-        if any(kw in msg_lower for kw in ["harness-loop", "harness loop"]):
+        if any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
             context_parts.append(
                 "[TELEGRAM_BOT_MODE]\n"
                 "You are running via a Telegram bot in pipe mode (claude -p).\n"
