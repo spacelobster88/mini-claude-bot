@@ -348,6 +348,12 @@ class SessionManager:
                     "Created session bot_id=%s chat_id=%s cwd=%s first_done=%s",
                     bot_id, chat_id, cwd, session.first_done,
                 )
+            else:
+                # Ensure CWD directory exists (may have been deleted by reset/cleanup)
+                session = self._sessions[key]
+                if not os.path.exists(session.cwd):
+                    os.makedirs(session.cwd, exist_ok=True)
+                    logger.info("Recreated missing CWD for session %s: %s", chat_id, session.cwd)
             return self._sessions[key]
 
     def _kill_process(self, proc: subprocess.Popen) -> None:
