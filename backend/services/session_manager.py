@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-sessions")
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
-CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "180"))  # 3 minutes for normal chat
-BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "240"))  # 4 minutes safety net (must exceed CLAUDE_TIMEOUT)
+CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "600"))  # 10 minutes for normal chat
+BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "660"))  # 11 minutes safety net (must exceed CLAUDE_TIMEOUT)
 QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "120"))  # max 2 min wait in queue
 
 # Memory guardrails
