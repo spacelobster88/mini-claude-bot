@@ -386,7 +386,10 @@ class SessionManager:
             except Exception as e:
                 context_parts.append(f"[Centurion Status]: NOT RUNNING (localhost:{centurion_port}) - {e}")
 
-        if any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
+        # Also inject TELEGRAM_BOT_MODE if .harness/ exists (covers resume scenarios
+        # where user says "resume harness" without the exact "harness-loop" keyword)
+        harness_exists = (Path(session.cwd) / ".harness").exists()
+        if harness_exists or any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
             context_parts.append(
                 "[TELEGRAM_BOT_MODE]\n"
                 "You are running via a Telegram bot in pipe mode (claude -p).\n"
@@ -631,6 +634,24 @@ class SessionManager:
         # Final done event
         yield {"type": "done", "content": full_response}
 
+    def _should_route_to_fg(self, chat_id: str, bot_id: str) -> bool:
+        """Check if a foreground message should be routed to a separate fg session.
+
+        When a background task is running for this chat_id, the main session's CWD
+        has an active Claude CLI process with --continue. Spawning another --continue
+        in the same CWD would block on Claude CLI's internal session lock. Route
+        foreground messages to a separate fg-{chat_id} session with its own CWD.
+        """
+        if chat_id.startswith("bg-") or chat_id.startswith("fg-"):
+            return False
+        bg_key = self._session_key(bot_id, chat_id)
+        bg_task = self._bg_tasks.get(bg_key)
+        if bg_task and bg_task["status"] == "running":
+            thread = bg_task.get("thread")
+            if thread and thread.is_alive():
+                return True
+        return False
+
     def send(self, chat_id: str, message: str, bot_id: str = "default") -> str:
         """Send a message to Claude CLI for the given chat. Blocking call.
 
@@ -642,6 +663,12 @@ class SessionManager:
         - On exit code -15 (SIGTERM / OOM kill), waits and retries automatically
         - Limits concurrent Claude processes to MAX_CLAUDE_PROCESSES
         """
+        # Route to separate fg session if background is running (avoid CWD lock conflict)
+        if self._should_route_to_fg(chat_id, bot_id):
+            fg_chat_id = f"fg-{chat_id}"
+            logger.info("Routing foreground message to fg session (bg running): chat_id=%s → %s", chat_id, fg_chat_id)
+            return self.send(fg_chat_id, message, bot_id=bot_id)
+
         # Check concurrent process limit
         waited = 0
         while waited < QUEUE_WAIT_TIMEOUT:
@@ -761,6 +788,13 @@ class SessionManager:
         Parallel to send() but yields event dicts instead of returning a string.
         No OOM retry loop — if the process dies, yields an error event.
         """
+        # Route to separate fg session if background is running (avoid CWD lock conflict)
+        if self._should_route_to_fg(chat_id, bot_id):
+            fg_chat_id = f"fg-{chat_id}"
+            logger.info("Routing streaming to fg session (bg running): chat_id=%s → %s", chat_id, fg_chat_id)
+            yield from self.send_streaming(fg_chat_id, message, bot_id=bot_id)
+            return
+
         # Check concurrent process limit
         waited = 0
         while waited < QUEUE_WAIT_TIMEOUT:
