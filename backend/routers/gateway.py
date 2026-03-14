@@ -42,21 +42,6 @@ class BackgroundSendRequest(BaseModel):
     plan_id: str = ""  # For pending plan confirmation
 
 
-class StorePlanRequest(BaseModel):
-    chat_id: str
-    plan_id: str
-    plan: str
-    bot_id: str = "default"
-
-
-@router.post("/store-pending-plan")
-def store_pending_plan(req: StorePlanRequest):
-    """Store a pending plan for later confirmation."""
-    manager = get_session_manager()
-    manager._store_pending_plan(req.chat_id, req.plan_id, req.plan, req.bot_id)
-    return {"status": "ok"}
-
-
 @router.post("/send")
 async def gateway_send(req: SendRequest) -> SendResponse:
     manager = get_session_manager()
@@ -195,26 +180,3 @@ def gateway_store_pending_plan(req: StorePendingPlanRequest):
     return {"status": "ok", "plan_id": req.plan_id}
 
 
-@router.get("/harness-state")
-def gateway_get_harness_state(chat_id: str, bot_id: str = Query(default="default")):
-    """Get current harness state for a chat."""
-    manager = get_session_manager()
-    state = manager._get_harness_state(chat_id, bot_id)
-    return state if state else {"state": "idle"}
-
-
-class EstimateDurationRequest(BaseModel):
-    plan: str
-
-
-@router.post("/estimate-duration")
-def gateway_estimate_duration(req: EstimateDurationRequest):
-    """Estimate task duration based on plan."""
-    manager = get_session_manager()
-    duration = manager._estimate_duration(req.plan)
-    is_short = manager._is_short_task(req.plan)
-    return {
-        "duration_seconds": duration,
-        "is_short_task": is_short,
-        "duration_human": f"{duration // 60}m {duration % 60}s" if duration > 60 else f"{duration}s"
-    }

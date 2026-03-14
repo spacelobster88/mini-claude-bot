@@ -36,27 +36,6 @@ MAX_CLAUDE_PROCESSES = int(os.getenv("GATEWAY_MAX_CLAUDE_PROCESSES", "2"))  # Ma
 # Messages matching these patterns get no timeout (they can run for hours)
 NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop"]
 
-# Harness-Loop State Machine
-class HarnessState:
-    IDLE = "idle"
-    COLLECTING = "collecting"
-    PLANNING = "planning"
-    PLAN_READY = "plan_ready"
-    AWAITING_PARALLEL = "awaiting_parallel"
-    RUNNING_FOREGROUND = "running_foreground"
-    RUNNING_BACKGROUND = "running_background"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-# Centurion State Machine
-class CenturionState:
-    IDLE = "idle"
-    AWAITING_TASK = "awaiting_task"
-    RUNNING_FOREGROUND = "running_foreground"
-    RUNNING_BACKGROUND = "running_background"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
 # Background task sessions (chat_id starts with "bg-") inherit no timeout
 def _is_background_session(chat_id: str) -> bool:
     """Check if this is a background task session."""
@@ -375,6 +354,40 @@ class SessionManager:
         except Exception as e:
             logger.debug("Error accessing harness directory: %s", e)
 
+        # Check Centurion status for harness-loop messages
+        msg_lower = message.lower()
+        if any(kw in msg_lower for kw in ["harness", "centurion"]):
+            try:
+                import httpx
+                centurion_port = os.getenv("CENTURION_PORT", "8100")
+                resp = httpx.get(
+                    f"http://localhost:{centurion_port}/api/centurion/hardware",
+                    timeout=3,
+                )
+                if resp.status_code == 200:
+                    hw = resp.json()
+                    context_parts.append(
+                        f"[Centurion Status (localhost:{centurion_port})]:\n"
+                        f"Memory pressure: {hw.get('system', {}).get('memory_pressure', 'unknown')}\n"
+                        f"Active agents: {hw.get('allocated', {}).get('active_agents', 0)}\n"
+                        f"Recommended max agents: {hw.get('recommended_max_agents', 0)}\n"
+                        f"RAM available: {hw.get('system', {}).get('ram_available_mb', 0)}MB"
+                    )
+            except Exception as e:
+                context_parts.append(f"[Centurion Status]: NOT RUNNING (localhost:{centurion_port}) - {e}")
+
+        if any(kw in msg_lower for kw in ["harness-loop", "harness loop"]):
+            context_parts.append(
+                "[TELEGRAM_BOT_MODE]\n"
+                "You are running via a Telegram bot in pipe mode (claude -p).\n"
+                "For harness-loop tasks:\n"
+                "- Phase 1 (foreground): Ask questions, gather requirements, design, and confirm the plan with the user.\n"
+                "- When the user confirms the plan and you are ready to start the Execute Loop:\n"
+                "  Output the plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
+                "  Do NOT start executing tasks. The bot will automatically start background execution.\n"
+                "- Phase 2 runs in a separate background session with --continue."
+            )
+
         if not context_parts:
             return message
         prefix = "Active project state in working directory:\n" + "\n\n".join(context_parts)
@@ -475,28 +488,6 @@ class SessionManager:
 
         session = self._get_or_create(chat_id, bot_id=bot_id)
 
-        # Check if this is a harness-loop task
-        message_lower = message.lower()
-        is_harness_loop = any(keyword in message_lower for keyword in ["harness-loop", "harness loop", "centurion"])
-        harness_task_started = False
-
-        if is_harness_loop:
-            # Initialize or check harness state
-            current_state = self._get_harness_state(chat_id, bot_id)
-
-            if not current_state or current_state["state"] == HarnessState.IDLE:
-                # New harness-loop task
-                task_type = "harness-loop" if "harness" in message_lower else "centurion"
-                self._set_harness_state(
-                    chat_id,
-                    HarnessState.COLLECTING,
-                    bot_id,
-                    task_type=task_type,
-                )
-                harness_task_started = True
-                logger.info("New harness task for chat=%s: %s", chat_id, task_type)
-            # Continue to normal processing for interaction
-
         # Wait for the session to become free (queue instead of reject)
         if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
             return "[BUSY] Timed out waiting in queue. The previous message is still processing."
@@ -580,14 +571,6 @@ class SessionManager:
         except Exception as e:
             return f"[ERROR] {e}"
         finally:
-            # Update harness state if we were in collecting/planning phase
-            if harness_task_started:
-                current_state = self._get_harness_state(chat_id, bot_id)
-                if current_state and current_state["state"] in [HarnessState.COLLECTING, HarnessState.PLANNING]:
-                    # Transition to plan_ready
-                    self._transition_harness_state(chat_id, current_state["state"], HarnessState.PLAN_READY, bot_id)
-                    logger.info("Harness task completed plan phase for chat=%s", chat_id)
-
             with session.lock:
                 session.busy = False
                 session.busy_since = 0.0
@@ -600,66 +583,9 @@ class SessionManager:
             with self._process_count_lock:
                 self._claude_process_count = max(0, self._claude_process_count - 1)
 
-    def _init_pending_plans_table(self):
-        """Initialize the pending_plans table."""
-        db = self._get_db()
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS pending_plans (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               chat_id TEXT NOT NULL,
-               bot_id TEXT NOT NULL DEFAULT 'default',
-               plan_id TEXT NOT NULL,
-               plan TEXT NOT NULL,
-               created_at REAL NOT NULL,
-               UNIQUE(chat_id, bot_id, plan_id)
-           )"""
-        )
-        db.commit()
-
-    def _init_harness_states_table(self):
-        """Initialize the harness_states table."""
-        db = self._get_db()
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS harness_states (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               chat_id TEXT NOT NULL,
-               bot_id TEXT NOT NULL DEFAULT 'default',
-               state TEXT NOT NULL,
-               plan_id TEXT,
-               task_type TEXT,
-               duration_estimate INTEGER,
-               parallel_enabled INTEGER DEFAULT 0,
-               foreground INTEGER DEFAULT 0,
-               created_at REAL NOT NULL,
-               updated_at REAL NOT NULL,
-               UNIQUE(chat_id, bot_id)
-           )"""
-        )
-        db.commit()
-
-    def _init_harness_plans_table(self):
-        """Initialize the harness_plans table."""
-        db = self._get_db()
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS harness_plans (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               chat_id TEXT NOT NULL,
-               bot_id TEXT NOT NULL DEFAULT 'default',
-               plan_id TEXT NOT NULL UNIQUE,
-               plan TEXT NOT NULL,
-               state TEXT NOT NULL,
-               task_type TEXT NOT NULL,
-               created_at REAL NOT NULL,
-               confirmed_at REAL,
-               started_at REAL,
-               completed_at REAL
-           )"""
-        )
-        db.commit()
-
     def _store_pending_plan(self, chat_id: str, plan_id: str, plan: str, bot_id: str = "default"):
         """Store a pending plan."""
-        self._init_pending_plans_table()
+
         db = self._get_db()
         try:
             with self._get_write_lock():
@@ -676,7 +602,7 @@ class SessionManager:
 
     def _get_pending_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
         """Get a specific pending plan."""
-        self._init_pending_plans_table()
+
         db = self._get_db()
         try:
             row = db.execute(
@@ -693,7 +619,7 @@ class SessionManager:
 
     def _remove_pending_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
         """Remove a pending plan."""
-        self._init_pending_plans_table()
+
         db = self._get_db()
         try:
             with self._get_write_lock():
@@ -706,220 +632,6 @@ class SessionManager:
                 logger.info("Removed pending plan %s for chat=%s", plan_id, chat_id)
         except Exception as e:
             logger.error("Failed to remove pending plan: %s", e)
-
-    # ========== Harness State Machine Methods ==========
-
-    def _get_harness_state(self, chat_id: str, bot_id: str = "default") -> dict:
-        """Get current harness state for a chat."""
-        self._init_harness_states_table()
-        db = self._get_db()
-        try:
-            row = db.execute(
-                """SELECT state, plan_id, task_type, duration_estimate,
-                          parallel_enabled, foreground
-                   FROM harness_states
-                   WHERE chat_id = ? AND bot_id = ?""",
-                (chat_id, bot_id),
-            ).fetchone()
-            if row:
-                return {
-                    "state": row[0],
-                    "plan_id": row[1],
-                    "task_type": row[2],
-                    "duration_estimate": row[3],
-                    "parallel_enabled": row[4],
-                    "foreground": row[5],
-                }
-        except Exception as e:
-            logger.error("Failed to get harness state: %s", e)
-        return None
-
-    def _set_harness_state(
-        self,
-        chat_id: str,
-        state: str,
-        bot_id: str = "default",
-        plan_id: str = "",
-        task_type: str = "",
-        duration_estimate: int = 0,
-        parallel_enabled: int = 0,
-        foreground: int = 0,
-    ):
-        """Set harness state for a chat."""
-        self._init_harness_states_table()
-        db = self._get_db()
-        try:
-            now = time.time()
-            with self._get_write_lock():
-                db.execute(
-                    """INSERT INTO harness_states
-                       (chat_id, bot_id, state, plan_id, task_type,
-                        duration_estimate, parallel_enabled, foreground, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(chat_id, bot_id) DO UPDATE SET
-                       state = excluded.state,
-                       plan_id = excluded.plan_id,
-                       task_type = excluded.task_type,
-                       duration_estimate = excluded.duration_estimate,
-                       parallel_enabled = excluded.parallel_enabled,
-                       foreground = excluded.foreground,
-                       updated_at = excluded.updated_at""",
-                    (
-                        chat_id, bot_id, state, plan_id, task_type,
-                        duration_estimate, parallel_enabled, foreground, now, now,
-                    ),
-                )
-                db.commit()
-                logger.info("Set harness state for chat=%s: %s", chat_id, state)
-        except Exception as e:
-            logger.error("Failed to set harness state: %s", e)
-
-    def _transition_harness_state(
-        self,
-        chat_id: str,
-        from_state: str,
-        to_state: str,
-        bot_id: str = "default",
-    ) -> bool:
-        """Transition harness state with validation."""
-        current = self._get_harness_state(chat_id, bot_id)
-        if not current:
-            logger.warning("No current state for chat=%s, setting to %s", chat_id, to_state)
-            self._set_harness_state(chat_id, to_state, bot_id)
-            return True
-
-        if current["state"] != from_state:
-            logger.warning(
-                "State transition failed for chat=%s: expected %s, got %s",
-                chat_id, from_state, current["state"],
-            )
-            return False
-
-        self._set_harness_state(chat_id, to_state, bot_id)
-        logger.info("State transition for chat=%s: %s -> %s", chat_id, from_state, to_state)
-        return True
-
-    def _store_harness_plan(
-        self,
-        chat_id: str,
-        plan_id: str,
-        plan: str,
-        task_type: str,
-        bot_id: str = "default",
-    ):
-        """Store a harness plan."""
-        self._init_harness_plans_table()
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """INSERT INTO harness_plans
-                       (chat_id, bot_id, plan_id, plan, state, task_type, created_at)
-                       VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                    (chat_id, bot_id, plan_id, plan, task_type, time.time()),
-                )
-                db.commit()
-                logger.info("Stored harness plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to store harness plan: %s", e)
-
-    def _get_harness_plan(self, chat_id: str, plan_id: str, bot_id: str = "default") -> dict:
-        """Get a harness plan."""
-        self._init_harness_plans_table()
-        db = self._get_db()
-        try:
-            row = db.execute(
-                """SELECT plan, task_type FROM harness_plans
-                   WHERE chat_id = ? AND bot_id = ? AND plan_id = ?""",
-                (chat_id, bot_id, plan_id),
-            ).fetchone()
-            if row:
-                return {"plan": row[0], "task_type": row[1]}
-        except Exception as e:
-            logger.error("Failed to get harness plan: %s", e)
-        return None
-
-    def _confirm_harness_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
-        """Mark a harness plan as confirmed."""
-        self._init_harness_plans_table()
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """UPDATE harness_plans SET state = 'confirmed', confirmed_at = ?
-                       WHERE chat_id = ? AND bot_id = ? AND plan_id = ?""",
-                    (time.time(), chat_id, bot_id, plan_id),
-                )
-                db.commit()
-                logger.info("Confirmed harness plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to confirm harness plan: %s", e)
-
-    def _start_harness_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
-        """Mark a harness plan as running."""
-        self._init_harness_plans_table()
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """UPDATE harness_plans SET state = 'running', started_at = ?
-                       WHERE chat_id = ? AND bot_id = ? AND plan_id = ?""",
-                    (time.time(), chat_id, bot_id, plan_id),
-                )
-                db.commit()
-                logger.info("Started harness plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to start harness plan: %s", e)
-
-    def _complete_harness_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
-        """Mark a harness plan as completed."""
-        self._init_harness_plans_table()
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """UPDATE harness_plans SET state = 'completed', completed_at = ?
-                       WHERE chat_id = ? AND bot_id = ? AND plan_id = ?""",
-                    (time.time(), chat_id, bot_id, plan_id),
-                )
-                db.commit()
-                logger.info("Completed harness plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to complete harness plan: %s", e)
-
-    def _estimate_duration(self, plan: str) -> int:
-        """Estimate task duration in seconds based on plan content."""
-        plan_lower = plan.lower()
-
-        # Simple heuristics based on keywords and plan length
-        duration = 0
-
-        # Base duration based on plan length
-        word_count = len(plan.split())
-        duration += word_count * 2  # 2 seconds per word base
-
-        # Adjust based on task type
-        if "安装" in plan_lower or "upgrade" in plan_lower:
-            duration += 120  # Install/upgrade tasks: +2 min
-        if "测试" in plan_lower or "test" in plan_lower:
-            duration += 180  # Testing tasks: +3 min
-        if "部署" in plan_lower or "deploy" in plan_lower:
-            duration += 300  # Deploy tasks: +5 min
-        if "迁移" in plan_lower or "migrate" in plan_lower:
-            duration += 600  # Migration tasks: +10 min
-        if "重构" in plan_lower or "refactor" in plan_lower:
-            duration += 900  # Refactoring: +15 min
-
-        # Clamp to reasonable range
-        duration = max(60, min(duration, 3600))  # 1 min to 1 hour
-
-        logger.info("Estimated duration for plan: %ds", duration)
-        return duration
-
-    def _is_short_task(self, plan: str) -> bool:
-        """Check if task is short (< 5 minutes)."""
-        duration = self._estimate_duration(plan)
-        return duration < 300  # 5 minutes
 
     def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", plan_id: str = "") -> dict:
         """Start a background Claude CLI task for the given chat.
