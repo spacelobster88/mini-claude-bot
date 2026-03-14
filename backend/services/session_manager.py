@@ -5,6 +5,7 @@ Claude CLI uses CWD to determine the "project", so --continue
 only resumes the session for that specific CWD.
 """
 
+import json
 import logging
 import os
 import signal
@@ -14,6 +15,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 import httpx
 
@@ -381,9 +383,12 @@ class SessionManager:
                 "[TELEGRAM_BOT_MODE]\n"
                 "You are running via a Telegram bot in pipe mode (claude -p).\n"
                 "For harness-loop tasks:\n"
-                "- Phase 1 (foreground): Ask questions, gather requirements, design, and confirm the plan with the user.\n"
-                "- When the user confirms the plan and you are ready to start the Execute Loop:\n"
-                "  Output the plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
+                "- Phase 1 (foreground): Ask clarifying questions, gather requirements, propose a design, and get explicit user confirmation.\n"
+                "  This MUST take multiple turns. Do NOT skip the Q&A phase. On the FIRST message, always ask clarifying questions.\n"
+                "- NEVER output [HARNESS_EXEC_READY] on the first response. The user must explicitly confirm the plan first\n"
+                "  (e.g., say 'approved', 'confirmed', 'go ahead', 'looks good', 'yes', '可以', '确认', '开始').\n"
+                "- Only AFTER the user has explicitly confirmed the plan in a SUBSEQUENT message:\n"
+                "  Output the final plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
                 "  Do NOT start executing tasks. The bot will automatically start background execution.\n"
                 "- Phase 2 runs in a separate background session with --continue."
             )
@@ -458,6 +463,167 @@ class SessionManager:
             self._prune_session_history(session)
 
         return (proc.returncode, stdout.strip() if stdout else "", stderr.strip() if stderr else "")
+
+    def _run_claude_cli_streaming(self, session: GatewaySession, message: str, env: dict) -> Iterator[dict]:
+        """Run Claude CLI in streaming mode and yield events as dicts.
+
+        Yields dicts with keys 'type' and 'content':
+        - {"type": "thinking", "content": "..."} for thinking content
+        - {"type": "text", "content": "..."} for text content deltas
+        - {"type": "done", "content": "full accumulated response"} at the end
+        - {"type": "error", "content": "error message"} on error
+        """
+        args = [
+            "claude", "-p",
+            "--disable-slash-commands",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+        ]
+        if session.first_done:
+            args.append("--continue")
+            args.append(message)
+        else:
+            args.append(self._inject_context(session, message))
+
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=session.cwd,
+            env=env,
+            start_new_session=True,
+        )
+
+        with session.lock:
+            session._proc = proc
+
+        # Determine timeout
+        is_background = _is_background_session(session.chat_id)
+        is_long_message = self._is_no_timeout_message(message)
+        timeout = None if (is_background or is_long_message) else CLAUDE_TIMEOUT
+
+        if timeout is None:
+            reason = "background session" if is_background else "long-running message"
+            logger.info("chat_id=%s: no timeout (%s)", session.chat_id, reason)
+
+        # Watchdog thread for timeout
+        timed_out = threading.Event()
+        watchdog_cancel = threading.Event()
+
+        def _watchdog():
+            if watchdog_cancel.wait(timeout=timeout):
+                return  # cancelled before timeout
+            # Timeout reached — kill the process
+            timed_out.set()
+            logger.warning("chat_id=%s: streaming timeout after %ds, killing process", session.chat_id, timeout)
+            self._kill_process(proc)
+
+        if timeout is not None:
+            wd_thread = threading.Thread(target=_watchdog, daemon=True)
+            wd_thread.start()
+
+        full_response = ""
+        error_occurred = False
+
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("chat_id=%s: non-JSON stream line: %s", session.chat_id, line[:200])
+                    continue
+
+                event_type = event.get("type", "")
+
+                # assistant message with content blocks (thinking and/or text)
+                if event_type == "assistant":
+                    content_blocks = event.get("message", {}).get("content", [])
+                    for block in content_blocks:
+                        if block.get("type") == "thinking":
+                            thinking_text = block.get("thinking", "")
+                            if thinking_text:
+                                yield {"type": "thinking", "content": thinking_text}
+                        elif block.get("type") == "text":
+                            text = block.get("text", "")
+                            if text:
+                                full_response += text
+                                yield {"type": "text", "content": text}
+
+                # content_block_delta with text or thinking
+                elif event_type == "content_block_delta":
+                    delta = event.get("delta", {})
+                    delta_type = delta.get("type", "")
+                    if delta_type == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            full_response += text
+                            yield {"type": "text", "content": text}
+                    elif delta_type == "thinking_delta":
+                        thinking = delta.get("thinking", "")
+                        if thinking:
+                            yield {"type": "thinking", "content": thinking}
+
+                # result event — contains the full text
+                elif event_type == "result":
+                    result_text = event.get("result", "")
+                    if result_text:
+                        full_response = result_text
+
+            # Wait for process to finish
+            proc.wait()
+
+        except Exception as e:
+            error_occurred = True
+            logger.error("chat_id=%s: streaming error: %s", session.chat_id, e)
+            yield {"type": "error", "content": str(e)}
+
+        finally:
+            # Cancel watchdog
+            watchdog_cancel.set()
+
+        # Check for timeout
+        if timed_out.is_set():
+            yield {"type": "error", "content": f"Claude timed out after {timeout}s"}
+            with session.lock:
+                session._proc = None
+            return
+
+        # Update session state (same as _run_claude_cli)
+        with session.lock:
+            session.first_done = True
+            session.last_active = time.time()
+            session._proc = None
+        self._persist_session(session)
+
+        # Check stderr
+        stderr = ""
+        try:
+            stderr = proc.stderr.read().strip() if proc.stderr else ""
+        except Exception:
+            pass
+
+        if stderr:
+            logger.info(
+                "chat_id=%s stderr (rc=%d): %s",
+                session.chat_id, proc.returncode, stderr[:500],
+            )
+
+        # Prune old session files on success
+        if proc.returncode == 0:
+            self._prune_session_history(session)
+
+        # Handle non-zero exit code
+        if proc.returncode != 0 and not error_occurred:
+            yield {"type": "error", "content": f"Claude exited with code {proc.returncode}: {stderr[:500]}"}
+            return
+
+        # Final done event
+        yield {"type": "done", "content": full_response}
 
     def send(self, chat_id: str, message: str, bot_id: str = "default") -> str:
         """Send a message to Claude CLI for the given chat. Blocking call.
@@ -570,6 +736,90 @@ class SessionManager:
 
         except Exception as e:
             return f"[ERROR] {e}"
+        finally:
+            with session.lock:
+                session.busy = False
+                session.busy_since = 0.0
+                if session._proc and session._proc.poll() is None:
+                    self._kill_process(session._proc)
+                session._proc = None
+            session._ready.set()
+            self._persist_session(session)
+            # Decrease process count
+            with self._process_count_lock:
+                self._claude_process_count = max(0, self._claude_process_count - 1)
+
+    def send_streaming(self, chat_id: str, message: str, bot_id: str = "default") -> Iterator[dict]:
+        """Send a message to Claude CLI and stream events back as a generator.
+
+        Parallel to send() but yields event dicts instead of returning a string.
+        No OOM retry loop — if the process dies, yields an error event.
+        """
+        # Check concurrent process limit
+        waited = 0
+        while waited < QUEUE_WAIT_TIMEOUT:
+            with self._process_count_lock:
+                if self._claude_process_count < MAX_CLAUDE_PROCESSES:
+                    self._claude_process_count += 1
+                    break
+            logger.info(
+                "chat_id=%s: Waiting for Claude process slot (%d/%d active)",
+                chat_id, self._claude_process_count, MAX_CLAUDE_PROCESSES
+            )
+            time.sleep(5)
+            waited += 5
+        else:
+            yield {"type": "error", "content": "Too many concurrent Claude processes. Please try again later."}
+            return
+
+        session = self._get_or_create(chat_id, bot_id=bot_id)
+
+        # Wait for the session to become free (queue instead of reject)
+        if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
+            # Release process slot since we never started
+            with self._process_count_lock:
+                self._claude_process_count = max(0, self._claude_process_count - 1)
+            yield {"type": "error", "content": "Timed out waiting in queue. The previous message is still processing."}
+            return
+
+        with session.lock:
+            if session.busy:
+                # Auto-recover from stuck busy state
+                stuck_duration = time.time() - session.busy_since
+                if stuck_duration > BUSY_STUCK_TIMEOUT:
+                    logger.warning(
+                        "Session chat_id=%s stuck busy for %ds, force-resetting",
+                        chat_id, int(stuck_duration),
+                    )
+                    if session._proc and session._proc.poll() is None:
+                        self._kill_process(session._proc)
+                        session._proc = None
+                    session.busy = False
+                else:
+                    # Release process slot since we never started
+                    with self._process_count_lock:
+                        self._claude_process_count = max(0, self._claude_process_count - 1)
+                    yield {"type": "error", "content": "Still processing the previous message, please wait."}
+                    return
+            session.busy = True
+            session.busy_since = time.time()
+            session._ready.clear()
+
+        try:
+            # Memory guardrail: wait for sufficient free memory
+            if not self._wait_for_memory(chat_id):
+                logger.warning(
+                    "chat_id=%s: Proceeding despite low memory (streaming)",
+                    chat_id,
+                )
+
+            # Clean env: remove CLAUDECODE to avoid "nested session" error
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+            yield from self._run_claude_cli_streaming(session, message, env)
+
+        except Exception as e:
+            yield {"type": "error", "content": str(e)}
         finally:
             with session.lock:
                 session.busy = False

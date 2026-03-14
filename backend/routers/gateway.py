@@ -5,8 +5,11 @@ Claude CLI directly. Each (bot_id, chat_id) gets an isolated session.
 """
 
 import asyncio
+import json
+import threading
 
 from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.db.engine import get_db
@@ -84,6 +87,68 @@ async def gateway_send(req: SendRequest) -> SendResponse:
         pass
 
     return SendResponse(response=response, session_key=req.chat_id)
+
+
+@router.post("/send-stream")
+async def gateway_send_stream(req: SendRequest):
+    manager = get_session_manager()
+    session_id = f"gw-{req.bot_id}-{req.chat_id}"
+
+    # Store user message in DB
+    db = get_db()
+    tg_chat_id = int(req.chat_id) if req.chat_id.lstrip("-").isdigit() else None
+    db.execute(
+        """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id, user_id, username)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, "user", req.message, "telegram", tg_chat_id, req.bot_id, req.user_id, req.username),
+    )
+    db.commit()
+
+    # Best-effort embedding
+    try:
+        user_msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        await store_chat_embedding(user_msg_id, req.message)
+    except Exception:
+        pass
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def _produce():
+        try:
+            for event in manager.send_streaming(req.chat_id, req.message, req.bot_id):
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "content": str(e)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    thread = threading.Thread(target=_produce, daemon=True)
+    thread.start()
+
+    full_response = ""
+
+    async def _generate():
+        nonlocal full_response
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            if event.get("type") == "done":
+                full_response = event.get("content", "")
+            yield f"data: {json.dumps(event)}\n\n"
+
+        # Store assistant response in DB after stream completes
+        is_error = full_response.startswith("[ERROR]") or full_response.startswith("[BUSY]")
+        source = "error" if is_error else "telegram"
+        db.execute(
+            """INSERT INTO chat_messages (session_id, role, content, source, telegram_chat_id, bot_id, user_id, username)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, "assistant", full_response, source, tg_chat_id, req.bot_id, None, None),
+        )
+        db.commit()
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 @router.post("/stop")
