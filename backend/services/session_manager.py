@@ -8,6 +8,7 @@ only resumes the session for that specific CWD.
 import json
 import logging
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -18,6 +19,13 @@ from pathlib import Path
 from typing import Iterator
 
 import httpx
+
+# Harness batch-chaining constants
+HARNESS_BATCH_DONE_RE = re.compile(r'\[HARNESS_BATCH_DONE:([^:]+):(\d+)/(\d+)\]')
+HARNESS_BLOCKED_RE = re.compile(r'\[HARNESS_BLOCKED:([^:]+):(.+)\]')
+HARNESS_COMPLETE_MARKER = '[HARNESS_COMPLETE]'
+MAX_HARNESS_CHAIN_DEPTH = 100
+HARNESS_CHAIN_DELAY = 5
 
 logger = logging.getLogger(__name__)
 
@@ -873,7 +881,7 @@ class SessionManager:
         except Exception as e:
             logger.error("Failed to remove pending plan: %s", e)
 
-    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", plan_id: str = "") -> dict:
+    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", plan_id: str = "", chain_depth: int = 0) -> dict:
         """Start a background Claude CLI task for the given chat.
 
         Uses a separate session (bg-{chat_id}) so it doesn't interfere with
@@ -934,21 +942,70 @@ class SessionManager:
             "started_at": started_at,
             "status": "running",
             "result": None,
+            "chain_depth": chain_depth,
         }
         self._bg_tasks[bg_key] = task_info
 
         def _run():
             try:
                 result = self.send(bg_session_key, message, bot_id=bot_id)
-                task_info["status"] = "completed"
                 task_info["result"] = result[:500] if result else ""
             except Exception as e:
                 result = f"[ERROR] Background task failed: {e}"
                 task_info["status"] = "failed"
                 task_info["result"] = result[:500]
+                self._send_telegram_result(chat_id, result, bot_token)
+                return
 
-            # Send result to Telegram, splitting into 4096-char chunks
-            self._send_telegram_result(chat_id, result, bot_token)
+            # Check for harness batch-chaining markers
+            marker = self._parse_harness_marker(result)
+
+            if marker is None:
+                # No marker — normal background task, send full result
+                task_info["status"] = "completed"
+                self._send_telegram_result(chat_id, result, bot_token)
+            elif marker["type"] == "batch_done":
+                phase = marker["phase"]
+                done = marker["done"]
+                total = marker["total"]
+                task_info["status"] = "completed"
+                # Send short progress to Telegram
+                self._send_telegram_result(
+                    chat_id,
+                    f"📊 Batch done — {phase}: {done}/{total} tasks complete. Chaining next batch (depth {chain_depth + 1})...",
+                    bot_token,
+                )
+                # Check chain depth limit
+                if chain_depth + 1 >= MAX_HARNESS_CHAIN_DEPTH:
+                    self._send_telegram_result(
+                        chat_id,
+                        f"⚠️ Harness chain depth limit reached ({MAX_HARNESS_CHAIN_DEPTH}). Stopping auto-chain.",
+                        bot_token,
+                    )
+                    return
+                # Delay then chain next batch
+                time.sleep(HARNESS_CHAIN_DELAY)
+                chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
+                self.send_background(
+                    chat_id, chain_message, bot_token,
+                    bot_id=bot_id, chain_depth=chain_depth + 1,
+                )
+            elif marker["type"] == "blocked":
+                task_info["status"] = "completed"
+                task_id = marker["task_id"]
+                reason = marker["reason"]
+                self._send_telegram_result(
+                    chat_id,
+                    f"🚫 Harness blocked on task {task_id}: {reason}\nSend a message to unblock.",
+                    bot_token,
+                )
+            elif marker["type"] == "complete":
+                task_info["status"] = "completed"
+                self._send_telegram_result(
+                    chat_id,
+                    "✅ Harness loop complete! All tasks finished.",
+                    bot_token,
+                )
 
         thread = threading.Thread(target=_run, daemon=True)
         task_info["thread"] = thread
@@ -987,6 +1044,110 @@ class SessionManager:
                     "Failed to send Telegram message for chat_id=%s: %s",
                     chat_id, e,
                 )
+
+    def _parse_harness_marker(self, result: str) -> dict | None:
+        """Search the last 500 chars of result for harness batch-chaining markers."""
+        if not result:
+            return None
+        tail = result[-500:]
+
+        if HARNESS_COMPLETE_MARKER in tail:
+            return {"type": "complete"}
+
+        m = HARNESS_BATCH_DONE_RE.search(tail)
+        if m:
+            return {
+                "type": "batch_done",
+                "phase": m.group(1),
+                "done": int(m.group(2)),
+                "total": int(m.group(3)),
+            }
+
+        m = HARNESS_BLOCKED_RE.search(tail)
+        if m:
+            return {
+                "type": "blocked",
+                "task_id": m.group(1),
+                "reason": m.group(2),
+            }
+
+        return None
+
+    def get_harness_status(self, chat_id: str, bot_id: str = "default") -> dict:
+        """Return structured harness progress by reading .harness/tasks.json from the bg session CWD."""
+        bg_key = self._session_key(bot_id, chat_id)
+        bg_session_key = f"bg-{chat_id}"
+
+        # Get background task status
+        task = self._bg_tasks.get(bg_key)
+        bg_status = "idle"
+        chain_depth = 0
+        elapsed = 0
+        if task:
+            bg_status = task["status"]
+            chain_depth = task.get("chain_depth", 0)
+            elapsed = int(time.time() - task.get("started_at", time.time()))
+
+        # Find the bg session CWD
+        session_key = self._session_key(bot_id, bg_session_key)
+        session = self._sessions.get(session_key)
+        if not session:
+            # Try main session
+            main_key = self._session_key(bot_id, chat_id)
+            session = self._sessions.get(main_key)
+
+        cwd = session.cwd if session else None
+
+        # Try to read .harness/tasks.json
+        harness = None
+        if cwd:
+            tasks_path = Path(cwd) / ".harness" / "tasks.json"
+            if tasks_path.exists():
+                try:
+                    with open(tasks_path) as f:
+                        tasks_data = json.load(f)
+
+                    metadata = tasks_data.get("metadata", {})
+                    tasks = tasks_data.get("tasks", [])
+                    total = len(tasks)
+
+                    # Count by status
+                    status_counts = {}
+                    for t in tasks:
+                        s = t.get("status", "pending")
+                        status_counts[s] = status_counts.get(s, 0) + 1
+
+                    # Count by phase
+                    phase_counts = {}
+                    for t in tasks:
+                        phase = t.get("phase", "unknown")
+                        s = t.get("status", "pending")
+                        if phase not in phase_counts:
+                            phase_counts[phase] = {"total": 0, "done": 0, "in_progress": 0, "blocked": 0, "pending": 0}
+                        phase_counts[phase]["total"] += 1
+                        if s in phase_counts[phase]:
+                            phase_counts[phase][s] += 1
+
+                    harness = {
+                        "project_name": metadata.get("project_name", "unknown"),
+                        "current_phase": metadata.get("current_phase", "unknown"),
+                        "total": total,
+                        "done": status_counts.get("done", 0),
+                        "in_progress": status_counts.get("in_progress", 0),
+                        "blocked": status_counts.get("blocked", 0),
+                        "pending": status_counts.get("pending", 0),
+                        "phases": phase_counts,
+                    }
+                except Exception as e:
+                    logger.warning("Failed to read harness tasks.json: %s", e)
+
+        return {
+            "bg_status": bg_status,
+            "elapsed_seconds": elapsed,
+            "chain_depth": chain_depth,
+            "cwd": cwd,
+            "harness": harness,
+        }
 
     def get_background_status(self, chat_id: str, bot_id: str = "default") -> dict:
         """Return the current background task info for this chat_id."""

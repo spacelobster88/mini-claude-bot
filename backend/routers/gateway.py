@@ -228,6 +228,13 @@ def gateway_send_background(req: BackgroundSendRequest):
     return result
 
 
+@router.get("/harness-status/{chat_id}")
+def gateway_harness_status(chat_id: str, bot_id: str = Query(default="default")):
+    """Get structured harness loop progress for the given chat_id."""
+    manager = get_session_manager()
+    return manager.get_harness_status(chat_id, bot_id=bot_id)
+
+
 @router.get("/background-status/{chat_id}")
 def gateway_background_status(chat_id: str, bot_id: str = Query(default="default")):
     """Get the status of a background task for the given chat_id."""
