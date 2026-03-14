@@ -42,6 +42,7 @@ class BackgroundSendRequest(BaseModel):
     message: str
     bot_token: str
     bot_id: str = "default"
+    project_id: str = ""
 
 
 @router.post("/send")
@@ -223,15 +224,16 @@ def gateway_send_background(req: BackgroundSendRequest):
     )
     db.commit()
 
-    result = manager.send_background(req.chat_id, req.message, req.bot_token, bot_id=req.bot_id)
+    result = manager.send_background(req.chat_id, req.message, req.bot_token, bot_id=req.bot_id, project_id=req.project_id)
     return result
 
 
 @router.get("/harness-status/{chat_id}")
 def gateway_harness_status(chat_id: str, bot_id: str = Query(default="default")):
-    """Get structured harness loop progress for the given chat_id."""
+    """Get structured harness loop progress for the given chat_id. Returns list of all jobs."""
     manager = get_session_manager()
-    return manager.get_harness_status(chat_id, bot_id=bot_id)
+    jobs = manager.get_all_harness_status(chat_id, bot_id=bot_id)
+    return {"jobs": jobs}
 
 
 @router.get("/background-status/{chat_id}")

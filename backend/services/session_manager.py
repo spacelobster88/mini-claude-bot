@@ -14,7 +14,9 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -29,8 +31,10 @@ HARNESS_CHAIN_DELAY = 5
 
 logger = logging.getLogger(__name__)
 
-SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", "/tmp/claude-gateway-sessions")
+SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", os.path.expanduser("~/claude-gateway-sessions"))
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
+HARNESS_SESSION_TIMEOUT = int(os.getenv("HARNESS_SESSION_TIMEOUT", "259200"))  # 3 days for harness projects
+HARNESS_ARCHIVE_DIR = os.path.expanduser("~/.claude-gateway-archives")
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "600"))  # 10 minutes for normal chat
 BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "660"))  # 11 minutes safety net (must exceed CLAUDE_TIMEOUT)
 QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "120"))  # max 2 min wait in queue
@@ -214,6 +218,81 @@ class SessionManager:
         except Exception as e:
             logger.debug("Error mangling CWD %s: %s", cwd, e)
             return "unknown"
+
+    def _archive_harness(self, session: GatewaySession) -> str | None:
+        """Archive .harness/ directory before cleanup. Returns UUID or None."""
+        harness_dir = Path(session.cwd) / ".harness"
+        if not harness_dir.exists():
+            return None
+
+        archive_id = str(uuid.uuid4())
+        archive_dir = Path(HARNESS_ARCHIVE_DIR)
+        archive_dest = archive_dir / archive_id / ".harness"
+
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(str(harness_dir), str(archive_dest))
+        except Exception as e:
+            logger.error("Failed to archive .harness/ for chat_id=%s: %s", session.chat_id, e)
+            return None
+
+        # Build index entry
+        project_name = "unknown"
+        status = "unknown"
+        tasks_done = 0
+        tasks_total = 0
+        tasks_blocked = 0
+        tasks_json = harness_dir / "tasks.json"
+        if tasks_json.exists():
+            try:
+                with open(tasks_json) as f:
+                    data = json.load(f)
+                metadata = data.get("metadata", {})
+                project_name = metadata.get("project_name", "unknown")
+                tasks = data.get("tasks", [])
+                tasks_total = len(tasks)
+                for t in tasks:
+                    s = t.get("status", "pending")
+                    if s == "done":
+                        tasks_done += 1
+                    elif s == "blocked":
+                        tasks_blocked += 1
+                status = "complete" if tasks_done == tasks_total and tasks_total > 0 else "incomplete"
+            except Exception:
+                pass
+
+        entry = {
+            "uuid": archive_id,
+            "project_name": project_name,
+            "chat_id": session.chat_id,
+            "bot_id": session.bot_id,
+            "original_cwd": session.cwd,
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "tasks_done": tasks_done,
+            "tasks_total": tasks_total,
+            "tasks_blocked": tasks_blocked,
+        }
+
+        # Append to index.json
+        index_path = archive_dir / "index.json"
+        try:
+            if index_path.exists():
+                with open(index_path) as f:
+                    index = json.load(f)
+            else:
+                index = []
+            index.append(entry)
+            with open(index_path, "w") as f:
+                json.dump(index, f, indent=2)
+            logger.info(
+                "Archived harness project '%s' for chat_id=%s → %s (status=%s, %d/%d tasks)",
+                project_name, session.chat_id, archive_id, status, tasks_done, tasks_total,
+            )
+        except Exception as e:
+            logger.error("Failed to write archive index: %s", e)
+
+        return archive_id
 
     def _cleanup_session_files(self, session: GatewaySession) -> None:
         """Clean up CWD directory and Claude CLI session files."""
@@ -634,6 +713,30 @@ class SessionManager:
         # Final done event
         yield {"type": "done", "content": full_response}
 
+    @staticmethod
+    def _make_project_id(cwd: str) -> str:
+        """Generate a short project_id from a CWD path (first 8 chars of md5)."""
+        import hashlib
+        return hashlib.md5(cwd.encode()).hexdigest()[:8]
+
+    def _bg_task_key(self, bot_id: str, chat_id: str, project_id: str) -> str:
+        """Construct a background task key: bot_id:chat_id:project_id."""
+        return f"{bot_id}:{chat_id}:{project_id}"
+
+    def _find_bg_tasks_for_chat(self, bot_id: str, chat_id: str) -> dict[str, dict]:
+        """Find all background tasks matching a (bot_id, chat_id) pair."""
+        prefix = f"{bot_id}:{chat_id}:"
+        return {k: v for k, v in self._bg_tasks.items() if k.startswith(prefix)}
+
+    def _has_running_bg_task(self, bot_id: str, chat_id: str) -> bool:
+        """Check if ANY background task is running for this chat_id."""
+        for task in self._find_bg_tasks_for_chat(bot_id, chat_id).values():
+            if task["status"] == "running":
+                thread = task.get("thread")
+                if thread and thread.is_alive():
+                    return True
+        return False
+
     def _should_route_to_fg(self, chat_id: str, bot_id: str) -> bool:
         """Check if a foreground message should be routed to a separate fg session.
 
@@ -644,13 +747,7 @@ class SessionManager:
         """
         if chat_id.startswith("bg-") or chat_id.startswith("fg-"):
             return False
-        bg_key = self._session_key(bot_id, chat_id)
-        bg_task = self._bg_tasks.get(bg_key)
-        if bg_task and bg_task["status"] == "running":
-            thread = bg_task.get("thread")
-            if thread and thread.is_alive():
-                return True
-        return False
+        return self._has_running_bg_task(bot_id, chat_id)
 
     def send(self, chat_id: str, message: str, bot_id: str = "default") -> str:
         """Send a message to Claude CLI for the given chat. Blocking call.
@@ -865,17 +962,22 @@ class SessionManager:
             with self._process_count_lock:
                 self._claude_process_count = max(0, self._claude_process_count - 1)
 
-    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", chain_depth: int = 0) -> dict:
+    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", chain_depth: int = 0, project_id: str = "") -> dict:
         """Start a background Claude CLI task for the given chat.
 
-        Uses a separate session (bg-{chat_id}) so it doesn't interfere with
+        Uses a separate session (bg-{chat_id}-{project_id}) so it doesn't interfere with
         the main interactive session. Returns immediately. Only one background
-        task per chat_id is allowed at a time. Sends the result to Telegram
-        via bot API on completion.
+        task per (chat_id, project_id) is allowed at a time. Sends the result to
+        Telegram via bot API on completion.
         """
-        bg_key = self._session_key(bot_id, chat_id)
+        # Resolve project_id from main session CWD if not provided
+        main_session = self._get_or_create(chat_id, bot_id=bot_id)
+        if not project_id:
+            project_id = self._make_project_id(main_session.cwd)
 
-        # Check if a background task is already running for this chat_id
+        bg_key = self._bg_task_key(bot_id, chat_id, project_id)
+
+        # Check if a background task is already running for this project
         with self._global_lock:
             existing = self._bg_tasks.get(bg_key)
             if existing and existing["status"] == "running":
@@ -884,21 +986,20 @@ class SessionManager:
                     elapsed = time.time() - existing.get("started_at", 0)
                     if elapsed > BUSY_STUCK_TIMEOUT:
                         logger.warning(
-                            "Force-clearing stale bg task for chat_id=%s (running %ds)",
-                            chat_id, int(elapsed),
+                            "Force-clearing stale bg task for chat_id=%s project=%s (running %ds)",
+                            chat_id, project_id, int(elapsed),
                         )
                         existing["status"] = "failed"
                         existing["result"] = f"Force-cleared: exceeded {BUSY_STUCK_TIMEOUT}s timeout"
                     else:
                         return {"status": "rejected", "reason": "already running", "elapsed": int(elapsed)}
                 else:
-                    logger.warning("Recovering dead bg task for chat_id=%s", chat_id)
+                    logger.warning("Recovering dead bg task for chat_id=%s project=%s", chat_id, project_id)
                     existing["status"] = "failed"
                     existing["result"] = "Thread died unexpectedly"
 
-        bg_session_key = f"bg-{chat_id}"
+        bg_session_key = f"bg-{chat_id}-{project_id}"
         # Share CWD with main session so background work is visible to main chat
-        main_session = self._get_or_create(chat_id, bot_id=bot_id)
         bg_session = self._get_or_create(bg_session_key, bot_id=bot_id)
         if bg_session.cwd != main_session.cwd:
             bg_session.cwd = main_session.cwd
@@ -913,6 +1014,8 @@ class SessionManager:
             "status": "running",
             "result": None,
             "chain_depth": chain_depth,
+            "project_id": project_id,
+            "cwd": main_session.cwd,
         }
         self._bg_tasks[bg_key] = task_info
 
@@ -959,6 +1062,7 @@ class SessionManager:
                 self.send_background(
                     chat_id, chain_message, bot_token,
                     bot_id=bot_id, chain_depth=chain_depth + 1,
+                    project_id=project_id,
                 )
             elif marker["type"] == "blocked":
                 task_info["status"] = "completed"
@@ -1043,81 +1147,95 @@ class SessionManager:
 
         return None
 
-    def get_harness_status(self, chat_id: str, bot_id: str = "default") -> dict:
-        """Return structured harness progress by reading .harness/tasks.json from the bg session CWD."""
-        bg_key = self._session_key(bot_id, chat_id)
-        bg_session_key = f"bg-{chat_id}"
+    @staticmethod
+    def _read_harness_progress(cwd: str) -> dict | None:
+        """Read .harness/tasks.json from a CWD and return structured progress."""
+        tasks_path = Path(cwd) / ".harness" / "tasks.json"
+        if not tasks_path.exists():
+            return None
+        try:
+            with open(tasks_path) as f:
+                tasks_data = json.load(f)
 
-        # Get background task status
-        task = self._bg_tasks.get(bg_key)
-        bg_status = "idle"
-        chain_depth = 0
-        elapsed = 0
-        if task:
-            bg_status = task["status"]
-            chain_depth = task.get("chain_depth", 0)
-            elapsed = int(time.time() - task.get("started_at", time.time()))
+            metadata = tasks_data.get("metadata", {})
+            tasks = tasks_data.get("tasks", [])
+            total = len(tasks)
 
-        # Find the bg session CWD
-        session_key = self._session_key(bot_id, bg_session_key)
-        session = self._sessions.get(session_key)
-        if not session:
-            # Try main session
+            status_counts: dict[str, int] = {}
+            for t in tasks:
+                s = t.get("status", "pending")
+                status_counts[s] = status_counts.get(s, 0) + 1
+
+            phase_counts: dict[str, dict] = {}
+            for t in tasks:
+                phase = t.get("phase", "unknown")
+                s = t.get("status", "pending")
+                if phase not in phase_counts:
+                    phase_counts[phase] = {"total": 0, "done": 0, "in_progress": 0, "blocked": 0, "pending": 0}
+                phase_counts[phase]["total"] += 1
+                if s in phase_counts[phase]:
+                    phase_counts[phase][s] += 1
+
+            return {
+                "project_name": metadata.get("project_name", "unknown"),
+                "current_phase": metadata.get("current_phase", "unknown"),
+                "total": total,
+                "done": status_counts.get("done", 0),
+                "in_progress": status_counts.get("in_progress", 0),
+                "blocked": status_counts.get("blocked", 0),
+                "pending": status_counts.get("pending", 0),
+                "phases": phase_counts,
+            }
+        except Exception as e:
+            logger.warning("Failed to read harness tasks.json from %s: %s", cwd, e)
+            return None
+
+    def get_all_harness_status(self, chat_id: str, bot_id: str = "default") -> list[dict]:
+        """Return structured harness progress for ALL background tasks for this chat_id."""
+        tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
+        if not tasks:
+            # No bg tasks — check main session for harness data anyway
             main_key = self._session_key(bot_id, chat_id)
             session = self._sessions.get(main_key)
+            if session:
+                harness = self._read_harness_progress(session.cwd)
+                if harness:
+                    return [{
+                        "bg_status": "idle",
+                        "elapsed_seconds": 0,
+                        "chain_depth": 0,
+                        "project_id": self._make_project_id(session.cwd),
+                        "cwd": session.cwd,
+                        "harness": harness,
+                    }]
+            return []
 
-        cwd = session.cwd if session else None
+        jobs = []
+        for bg_key, task in tasks.items():
+            bg_status = task["status"]
+            chain_depth = task.get("chain_depth", 0)
+            project_id = task.get("project_id", "unknown")
+            elapsed = int(time.time() - task.get("started_at", time.time()))
+            cwd = task.get("cwd")
 
-        # Try to read .harness/tasks.json
-        harness = None
-        if cwd:
-            tasks_path = Path(cwd) / ".harness" / "tasks.json"
-            if tasks_path.exists():
-                try:
-                    with open(tasks_path) as f:
-                        tasks_data = json.load(f)
+            harness = self._read_harness_progress(cwd) if cwd else None
 
-                    metadata = tasks_data.get("metadata", {})
-                    tasks = tasks_data.get("tasks", [])
-                    total = len(tasks)
+            jobs.append({
+                "bg_status": bg_status,
+                "elapsed_seconds": elapsed,
+                "chain_depth": chain_depth,
+                "project_id": project_id,
+                "cwd": cwd,
+                "harness": harness,
+            })
+        return jobs
 
-                    # Count by status
-                    status_counts = {}
-                    for t in tasks:
-                        s = t.get("status", "pending")
-                        status_counts[s] = status_counts.get(s, 0) + 1
-
-                    # Count by phase
-                    phase_counts = {}
-                    for t in tasks:
-                        phase = t.get("phase", "unknown")
-                        s = t.get("status", "pending")
-                        if phase not in phase_counts:
-                            phase_counts[phase] = {"total": 0, "done": 0, "in_progress": 0, "blocked": 0, "pending": 0}
-                        phase_counts[phase]["total"] += 1
-                        if s in phase_counts[phase]:
-                            phase_counts[phase][s] += 1
-
-                    harness = {
-                        "project_name": metadata.get("project_name", "unknown"),
-                        "current_phase": metadata.get("current_phase", "unknown"),
-                        "total": total,
-                        "done": status_counts.get("done", 0),
-                        "in_progress": status_counts.get("in_progress", 0),
-                        "blocked": status_counts.get("blocked", 0),
-                        "pending": status_counts.get("pending", 0),
-                        "phases": phase_counts,
-                    }
-                except Exception as e:
-                    logger.warning("Failed to read harness tasks.json: %s", e)
-
-        return {
-            "bg_status": bg_status,
-            "elapsed_seconds": elapsed,
-            "chain_depth": chain_depth,
-            "cwd": cwd,
-            "harness": harness,
-        }
+    def get_harness_status(self, chat_id: str, bot_id: str = "default") -> dict:
+        """Backward-compatible single-job harness status. Returns the first job or idle."""
+        jobs = self.get_all_harness_status(chat_id, bot_id=bot_id)
+        if not jobs:
+            return {"bg_status": "idle", "elapsed_seconds": 0, "chain_depth": 0, "cwd": None, "harness": None}
+        return jobs[0]
 
     def get_background_status(self, chat_id: str, bot_id: str = "default") -> dict:
         """Return the current background task info for this chat_id."""
@@ -1207,13 +1325,20 @@ class SessionManager:
         with self._global_lock:
             to_remove = []
             for key, session in self._sessions.items():
-                if not session.busy and (now - session.last_active) > SESSION_IDLE_TIMEOUT:
+                if session.busy:
+                    continue
+                idle_duration = now - session.last_active
+                # Tiered retention: harness sessions get 3 days, regular sessions get 2 hours
+                has_harness = (Path(session.cwd) / ".harness").exists() if os.path.exists(session.cwd) else False
+                timeout = HARNESS_SESSION_TIMEOUT if has_harness else SESSION_IDLE_TIMEOUT
+                if idle_duration > timeout:
                     to_remove.append(key)
             for key in to_remove:
                 removed_sessions.append(self._sessions.pop(key))
                 logger.info("Cleaned up idle session bot_id=%s chat_id=%s", removed_sessions[-1].bot_id, removed_sessions[-1].chat_id)
-        # Clean up files and DB outside the lock
+        # Archive harness data, then clean up files and DB outside the lock
         for session in removed_sessions:
+            self._archive_harness(session)
             self._cleanup_session_files(session)
             self._delete_persisted_session(session.chat_id, bot_id=session.bot_id)
 
