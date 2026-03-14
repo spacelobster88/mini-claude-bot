@@ -141,10 +141,11 @@ class SessionManager:
                     cwd = row["cwd"]
                     bot_id = row.get("bot_id", "default") or "default"
 
-                    # Check if CWD still exists, if not, skip this session
-                    if not os.path.exists(cwd):
-                        logger.debug("Session CWD no longer exists, skipping: %s", cwd)
-                        # Clean up the stale DB record
+                    # Skip sessions with stale CWDs (e.g., from old /tmp base dir)
+                    resolved_base = str(Path(SESSION_BASE_DIR).resolve())
+                    resolved_cwd = str(Path(cwd).resolve()) if os.path.exists(cwd) else cwd
+                    if not os.path.exists(cwd) or not resolved_cwd.startswith(resolved_base):
+                        logger.debug("Session CWD stale or mismatched, skipping: %s (base: %s)", cwd, SESSION_BASE_DIR)
                         self._delete_persisted_session(row["chat_id"], bot_id)
                         continue
 
