@@ -831,79 +831,15 @@ class SessionManager:
             with self._process_count_lock:
                 self._claude_process_count = max(0, self._claude_process_count - 1)
 
-    def _store_pending_plan(self, chat_id: str, plan_id: str, plan: str, bot_id: str = "default"):
-        """Store a pending plan."""
-
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """INSERT INTO pending_plans
-                       (chat_id, bot_id, plan_id, plan, created_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (chat_id, bot_id, plan_id, plan, time.time()),
-                )
-                db.commit()
-                logger.info("Stored pending plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to store pending plan: %s", e)
-
-    def _get_pending_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
-        """Get a specific pending plan."""
-
-        db = self._get_db()
-        try:
-            row = db.execute(
-                """SELECT plan_id, plan FROM pending_plans
-                   WHERE chat_id = ? AND bot_id = ? AND plan_id = ?
-                   ORDER BY created_at DESC LIMIT 1""",
-                (chat_id, bot_id, plan_id),
-            ).fetchone()
-            if row:
-                return {"plan_id": row[0], "plan": row[1]}
-        except Exception as e:
-            logger.error("Failed to get pending plan: %s", e)
-        return None
-
-    def _remove_pending_plan(self, chat_id: str, plan_id: str, bot_id: str = "default"):
-        """Remove a pending plan."""
-
-        db = self._get_db()
-        try:
-            with self._get_write_lock():
-                db.execute(
-                    """DELETE FROM pending_plans
-                       WHERE chat_id = ? AND bot_id = ? AND plan_id = ?""",
-                    (chat_id, bot_id, plan_id),
-                )
-                db.commit()
-                logger.info("Removed pending plan %s for chat=%s", plan_id, chat_id)
-        except Exception as e:
-            logger.error("Failed to remove pending plan: %s", e)
-
-    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", plan_id: str = "", chain_depth: int = 0) -> dict:
+    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", chain_depth: int = 0) -> dict:
         """Start a background Claude CLI task for the given chat.
 
         Uses a separate session (bg-{chat_id}) so it doesn't interfere with
         the main interactive session. Returns immediately. Only one background
         task per chat_id is allowed at a time. Sends the result to Telegram
         via bot API on completion.
-
-        If plan_id is provided, retrieves the stored plan instead of using message.
         """
         bg_key = self._session_key(bot_id, chat_id)
-
-        # Check if plan_id is provided (confirm command)
-        if plan_id:
-            pending_plan = self._get_pending_plan(chat_id, plan_id, bot_id)
-            if pending_plan:
-                # Use the stored plan
-                message = pending_plan["plan"]
-                logger.info("Using pending plan %s for chat=%s", plan_id, chat_id)
-                # Remove the plan after confirming
-                self._remove_pending_plan(chat_id, plan_id, bot_id)
-            else:
-                logger.warning("Pending plan %s not found for chat=%s", plan_id, chat_id)
 
         # Check if a background task is already running for this chat_id
         with self._global_lock:

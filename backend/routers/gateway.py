@@ -42,7 +42,6 @@ class BackgroundSendRequest(BaseModel):
     message: str
     bot_token: str
     bot_id: str = "default"
-    plan_id: str = ""  # For pending plan confirmation
 
 
 @router.post("/send")
@@ -224,7 +223,7 @@ def gateway_send_background(req: BackgroundSendRequest):
     )
     db.commit()
 
-    result = manager.send_background(req.chat_id, req.message, req.bot_token, bot_id=req.bot_id, plan_id=req.plan_id)
+    result = manager.send_background(req.chat_id, req.message, req.bot_token, bot_id=req.bot_id)
     return result
 
 
@@ -241,19 +240,5 @@ def gateway_background_status(chat_id: str, bot_id: str = Query(default="default
     manager = get_session_manager()
     return manager.get_background_status(chat_id, bot_id=bot_id)
 
-
-class StorePendingPlanRequest(BaseModel):
-    chat_id: str
-    plan_id: str
-    plan: str
-    bot_id: str = "default"
-
-
-@router.post("/store-pending-plan")
-def gateway_store_pending_plan(req: StorePendingPlanRequest):
-    """Store a pending plan for later confirmation."""
-    manager = get_session_manager()
-    manager._store_pending_plan(req.chat_id, req.plan_id, req.plan, req.bot_id)
-    return {"status": "ok", "plan_id": req.plan_id}
 
 
