@@ -6,8 +6,25 @@ export interface DashboardMetrics {
   claude_usage: ClaudeUsage;
   system: SystemMetrics;
   db_health?: DbHealth;
-  ollama_models?: OllamaModel[];
-  services?: ServiceStatus[];
+  harness?: HarnessSummary;
+}
+
+export interface HarnessJob {
+  bg_status: string;
+  elapsed_seconds: number;
+  chain_depth: number;
+  project_id: string;
+  project_name: string;
+  current_phase: string;
+  done: number;
+  total: number;
+  in_progress: number;
+  blocked: number;
+}
+
+export interface HarnessSummary {
+  running_jobs: HarnessJob[];
+  archived_count: number;
 }
 
 export interface DbHealth {

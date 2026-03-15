@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,55 @@ from backend.services.system_metrics import collect as collect_system
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+HARNESS_ARCHIVE_INDEX = Path(os.path.expanduser("~/.claude-gateway-archives/index.json"))
+
+
+def _collect_harness_summary() -> dict:
+    """Collect running harness jobs and archived count."""
+    from backend.services.session_manager import get_session_manager
+
+    running_jobs = []
+    try:
+        manager = get_session_manager()
+        # Scan all bg tasks for running harness loops
+        for key, task in manager._bg_tasks.items():
+            cwd = task.get("cwd")
+            if not cwd:
+                continue
+            harness = manager._read_harness_progress(cwd)
+            if harness is None:
+                continue
+            running_jobs.append({
+                "bg_status": task.get("status", "unknown"),
+                "elapsed_seconds": int(time.time() - task.get("started_at", time.time())),
+                "chain_depth": task.get("chain_depth", 0),
+                "project_id": task.get("project_id", "unknown"),
+                "project_name": harness.get("project_name", "unknown"),
+                "current_phase": harness.get("current_phase", "unknown"),
+                "done": harness.get("done", 0),
+                "total": harness.get("total", 0),
+                "in_progress": harness.get("in_progress", 0),
+                "blocked": harness.get("blocked", 0),
+            })
+    except Exception as e:
+        logger.warning("Failed to collect harness jobs: %s", e)
+
+    # Count archived harness loops
+    archived_count = 0
+    try:
+        if HARNESS_ARCHIVE_INDEX.exists():
+            with open(HARNESS_ARCHIVE_INDEX) as f:
+                index = json.load(f)
+                archived_count = len(index)
+    except Exception:
+        pass
+
+    return {
+        "running_jobs": running_jobs,
+        "archived_count": archived_count,
+    }
+
 
 METRICS_CACHE_PATH = Path(os.getenv(
     "METRICS_CACHE_PATH",
@@ -58,6 +108,9 @@ def _collect_metrics() -> dict:
 
     claude = read_claude_stats()
 
+    # Harness loop status
+    harness = _collect_harness_summary()
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "cron_jobs": cron_jobs,
@@ -76,6 +129,7 @@ def _collect_metrics() -> dict:
         },
         "claude_usage": claude,
         "system": collect_system(),
+        "harness": harness,
     }
 
 

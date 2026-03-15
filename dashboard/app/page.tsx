@@ -127,7 +127,7 @@ export default function Dashboard() {
     );
   }
 
-  const { system: sys, claude_usage: claude, cron_jobs: jobs, memory: mem, chat, db_health: dbh, ollama_models: ollama, services } = data;
+  const { system: sys, claude_usage: claude, cron_jobs: jobs, memory: mem, chat, db_health: dbh, harness } = data;
   const lastPush = data._last_push;
   const isOnline = lastPush ? Date.now() - new Date(lastPush).getTime() < 600000 : false;
 
@@ -362,33 +362,47 @@ export default function Dashboard() {
           )}
         </Card>
 
-        {/* Other AI Services */}
-        <Card title="Other AI Services">
-          <div className="space-y-2">
-            {services && services.length > 0 && (
-              <div className="grid grid-cols-2 gap-1.5">
-                {services.map((svc) => (
-                  <div key={svc.name} className="bg-gray-800 rounded-lg px-3 py-2 flex items-center justify-between">
-                    <span className="text-xs text-gray-300">{svc.name}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                      svc.type === "agent" ? "bg-blue-900/50 text-blue-400" :
-                      svc.type === "local" ? "bg-purple-900/50 text-purple-400" :
-                      svc.type === "bridge" ? "bg-cyan-900/50 text-cyan-400" :
-                      "bg-gray-700 text-gray-400"
-                    }`}>{svc.type}</span>
-                  </div>
-                ))}
+        {/* Harness Loops */}
+        <Card title="Harness Loops">
+          <div className="space-y-3">
+            {harness && harness.running_jobs.length > 0 ? (
+              <div className="space-y-2">
+                {harness.running_jobs.map((job) => {
+                  const pct = job.total > 0 ? Math.round((job.done / job.total) * 100) : 0;
+                  const elapsed = job.elapsed_seconds;
+                  const mins = Math.floor(elapsed / 60);
+                  return (
+                    <div key={job.project_id} className="bg-gray-800 rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-medium text-gray-200">{job.project_name}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                          job.bg_status === "running" ? "bg-green-900/50 text-green-400" :
+                          job.bg_status === "completed" ? "bg-blue-900/50 text-blue-400" :
+                          "bg-yellow-900/50 text-yellow-400"
+                        }`}>{job.bg_status}</span>
+                      </div>
+                      <div className="text-xs text-gray-500 mb-1">
+                        Phase: {job.current_phase} &middot; {job.done}/{job.total} tasks &middot; {mins}m elapsed
+                        {job.chain_depth > 0 && <span> &middot; chain #{job.chain_depth}</span>}
+                      </div>
+                      <ProgressBar value={job.done} max={job.total} color="bg-emerald-500" />
+                      {job.blocked > 0 && (
+                        <div className="text-[10px] text-red-400 mt-1">{job.blocked} blocked</div>
+                      )}
+                      {job.in_progress > 0 && (
+                        <div className="text-[10px] text-yellow-400 mt-0.5">{job.in_progress} in progress</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
+            ) : (
+              <div className="text-xs text-gray-600">No active harness loops</div>
             )}
-            {ollama && ollama.length > 0 && (
-              <div>
-                <div className="text-xs text-gray-500 mb-1.5">Local Models (Ollama)</div>
-                {ollama.map((m) => (
-                  <div key={m.name} className="flex justify-between text-xs py-1 border-b border-gray-800 last:border-0">
-                    <span className="text-gray-300 font-mono">{m.name}</span>
-                    <span className="text-gray-600">{m.size}</span>
-                  </div>
-                ))}
+            {harness && (
+              <div className="flex justify-between text-xs text-gray-500 pt-2 border-t border-gray-800">
+                <span>Archived projects</span>
+                <span className="text-gray-400">{harness.archived_count}</span>
               </div>
             )}
           </div>
