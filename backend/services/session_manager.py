@@ -1338,6 +1338,24 @@ class SessionManager:
             cleaned += 1
             details.append(f"Cleaned ({status}): {project_id}")
 
+        # Also check the main session's CWD for completed harness projects
+        main_key = self._session_key(bot_id, chat_id)
+        main_session = self._sessions.get(main_key)
+        if main_session:
+            harness_dir = Path(main_session.cwd) / ".harness"
+            if harness_dir.exists():
+                harness = self._read_harness_progress(main_session.cwd)
+                if harness and harness.get("total", 0) > 0 and harness["done"] == harness["total"]:
+                    archive_id = self._archive_harness(main_session)
+                    if archive_id:
+                        archived += 1
+                        details.append(f"Archived completed: {harness.get('project_name', 'unknown')}")
+                        # Remove the .harness/ directory after archiving
+                        import shutil
+                        shutil.rmtree(str(harness_dir), ignore_errors=True)
+                        details.append(f"Cleaned CWD: {main_session.cwd}")
+                        cleaned += 1
+
         return {
             "cleaned": cleaned,
             "archived": archived,
