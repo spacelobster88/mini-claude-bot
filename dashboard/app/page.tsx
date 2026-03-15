@@ -84,7 +84,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
-  const [showAllJobs, setShowAllJobs] = useState(false);
+  const [jobPage, setJobPage] = useState(0);
+  const jobsPerPage = 5;
 
   const fetchMetrics = async () => {
     try {
@@ -263,35 +264,52 @@ export default function Dashboard() {
         </Card>
 
         {/* Scheduled Jobs */}
-        <Card title={`Scheduled Jobs (${jobs.length})`}>
-          <div className="space-y-2">
-            {(showAllJobs ? jobs : jobs.slice(0, 5)).map((job) => (
-              <div key={job.id} className="bg-gray-800 rounded-lg p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm font-medium truncate mr-2">{job.name}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${job.enabled ? "bg-green-900 text-green-300" : "bg-gray-700 text-gray-400"}`}>
-                    {job.enabled ? "on" : "off"}
-                  </span>
-                </div>
-                <div className="flex justify-between text-xs text-gray-500">
-                  <span className="font-mono">{job.cron_expression}</span>
-                  <span>{job.timezone || "system"}</span>
-                </div>
-                {job.last_run_at && (
-                  <div className="text-xs text-gray-600 mt-1">Last: {timeAgo(job.last_run_at)}</div>
+        {(() => {
+          const totalPages = Math.ceil(jobs.length / jobsPerPage);
+          const pagedJobs = jobs.slice(jobPage * jobsPerPage, (jobPage + 1) * jobsPerPage);
+          return (
+            <Card title={`Scheduled Jobs (${jobs.length})`}>
+              <div className="space-y-2">
+                {pagedJobs.map((job) => (
+                  <div key={job.id} className="bg-gray-800 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium truncate mr-2">{job.name}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${job.enabled ? "bg-green-900 text-green-300" : "bg-gray-700 text-gray-400"}`}>
+                        {job.enabled ? "on" : "off"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span className="font-mono">{job.cron_expression}</span>
+                      <span>{job.timezone || "system"}</span>
+                    </div>
+                    {job.last_run_at && (
+                      <div className="text-xs text-gray-600 mt-1">Last: {timeAgo(job.last_run_at)}</div>
+                    )}
+                  </div>
+                ))}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      onClick={() => setJobPage(Math.max(0, jobPage - 1))}
+                      disabled={jobPage === 0}
+                      className="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Prev
+                    </button>
+                    <span className="text-xs text-gray-500">{jobPage + 1} / {totalPages}</span>
+                    <button
+                      onClick={() => setJobPage(Math.min(totalPages - 1, jobPage + 1))}
+                      disabled={jobPage >= totalPages - 1}
+                      className="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
                 )}
               </div>
-            ))}
-            {jobs.length > 5 && (
-              <button
-                onClick={() => setShowAllJobs(!showAllJobs)}
-                className="w-full text-xs text-blue-400 hover:text-blue-300 py-1.5 bg-gray-800/50 rounded-lg transition-colors"
-              >
-                {showAllJobs ? "Show less" : `Show all ${jobs.length} jobs`}
-              </button>
-            )}
-          </div>
-        </Card>
+            </Card>
+          );
+        })()}
 
         {/* Memory */}
         <Card title="Memory Store">
@@ -374,24 +392,21 @@ export default function Dashboard() {
         {/* Harness Loops */}
         <Card title="Harness Loops">
           <div className="space-y-3">
-            {harness && harness.running_jobs.length > 0 ? (
-              <div className="space-y-2">
-                {harness.running_jobs.map((job) => {
-                  const pct = job.total > 0 ? Math.round((job.done / job.total) * 100) : 0;
-                  const elapsed = job.elapsed_seconds;
-                  const mins = Math.floor(elapsed / 60);
-                  return (
+            {harness && harness.running_jobs.length > 0 && (
+              <div>
+                <div className="text-xs text-gray-500 mb-1.5">Active</div>
+                <div className="space-y-2">
+                  {harness.running_jobs.map((job) => (
                     <div key={job.project_id} className="bg-gray-800 rounded-lg p-3">
                       <div className="flex items-center justify-between mb-1.5">
                         <span className="text-sm font-medium text-gray-200">{job.project_name}</span>
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                           job.bg_status === "running" ? "bg-green-900/50 text-green-400" :
-                          job.bg_status === "completed" ? "bg-blue-900/50 text-blue-400" :
                           "bg-yellow-900/50 text-yellow-400"
-                        }`}>{job.bg_status}</span>
+                        }`}>{job.bg_status === "running" ? "running" : "stalled"}</span>
                       </div>
                       <div className="text-xs text-gray-500 mb-1">
-                        Phase: {job.current_phase} &middot; {job.done}/{job.total} tasks &middot; {mins}m elapsed
+                        Phase: {job.current_phase} &middot; {job.done}/{job.total} tasks
                         {job.chain_depth > 0 && <span> &middot; chain #{job.chain_depth}</span>}
                       </div>
                       <ProgressBar value={job.done} max={job.total} color="bg-emerald-500" />
@@ -402,16 +417,23 @@ export default function Dashboard() {
                         <div className="text-[10px] text-yellow-400 mt-0.5">{job.in_progress} in progress</div>
                       )}
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            ) : (
+            )}
+            {harness && harness.running_jobs.length === 0 && (
               <div className="text-xs text-gray-600">No active harness loops</div>
             )}
             {harness && (
-              <div className="flex justify-between text-xs text-gray-500 pt-2 border-t border-gray-800">
-                <span>Archived projects</span>
-                <span className="text-gray-400">{harness.archived_count}</span>
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800">
+                <div className="bg-gray-800 rounded-lg p-2.5 text-center">
+                  <div className="text-lg font-bold text-emerald-400">{harness.completed_jobs?.length || 0}</div>
+                  <div className="text-[10px] text-gray-500">Completed</div>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-2.5 text-center">
+                  <div className="text-lg font-bold text-gray-400">{harness.archived_count}</div>
+                  <div className="text-[10px] text-gray-500">Archived</div>
+                </div>
               </div>
             )}
           </div>

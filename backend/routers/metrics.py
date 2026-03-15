@@ -90,8 +90,13 @@ def _collect_harness_summary() -> dict:
     except Exception:
         pass
 
+    # Separate active vs completed
+    active_jobs = [j for j in running_jobs if j["done"] < j["total"]]
+    completed_jobs = [j for j in running_jobs if j["done"] >= j["total"] and j["total"] > 0]
+
     return {
-        "running_jobs": running_jobs,
+        "running_jobs": active_jobs,
+        "completed_jobs": completed_jobs,
         "archived_count": archived_count,
     }
 

@@ -24,6 +24,7 @@ export interface HarnessJob {
 
 export interface HarnessSummary {
   running_jobs: HarnessJob[];
+  completed_jobs: HarnessJob[];
   archived_count: number;
 }
 
