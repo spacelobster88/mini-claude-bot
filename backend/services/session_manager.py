@@ -1306,11 +1306,28 @@ class SessionManager:
             thread = task.get("thread")
             cwd = task.get("cwd")
             project_id = task.get("project_id", "unknown")
+            harness = None
+            harness_incomplete = False
+
+            if cwd:
+                harness = self._read_harness_progress(cwd)
+                if harness and harness.get("total", 0) > 0:
+                    done = harness.get("done", 0)
+                    total = harness.get("total", 0)
+                    if done < total:
+                        harness_incomplete = True
 
             # Skip running tasks with live threads
             if status == "running" and thread and thread.is_alive():
                 skipped += 1
                 details.append(f"Skipped running: {project_id}")
+                continue
+
+            if harness_incomplete:
+                skipped += 1
+                details.append(
+                    f"Skipped active harness: {project_id} ({harness.get('done', 0)}/{harness.get('total', 0)})"
+                )
                 continue
 
             # If status is "running" but thread is dead, treat as failed
@@ -1319,11 +1336,10 @@ class SessionManager:
                 task["result"] = "Thread died (cleaned up)"
                 status = "failed"
 
-            # Archive harness data if session exists
-            if cwd:
+            # Archive harness data if session exists and fully complete
+            if cwd and harness and harness.get("total", 0) > 0 and harness.get("done", 0) == harness.get("total", 0):
                 harness_dir = Path(cwd) / ".harness"
                 if harness_dir.exists():
-                    # Find the session to archive
                     session_key = self._session_key(bot_id, f"bg-{chat_id}-{project_id}")
                     session = self._sessions.get(session_key)
                     if session:
@@ -1380,9 +1396,23 @@ class SessionManager:
             session.busy = False
         session._ready.set()  # wake up any queued messages
 
+        # Clean up fg/bg session files
         self._cleanup_session_files(session)
         self._delete_persisted_session(chat_id, bot_id=bot_id)
-        logger.info("Stopped session bot_id=%s chat_id=%s", bot_id, chat_id)
+
+        # Also stop any background tasks tied to this chat
+        bg_tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
+        for bg_key in list(bg_tasks.keys()):
+            task = self._bg_tasks.pop(bg_key, None)
+            if task:
+                thread = task.get("thread")
+                if thread and thread.is_alive():
+                    # Best effort: mark as cancelled; daemon thread will exit when send finishes
+                    task["status"] = "cancelled"
+                cwd = task.get("cwd")
+                if cwd:
+                    self._cleanup_session_files(GatewaySession(chat_id=bg_key, bot_id=bot_id, cwd=cwd))
+        logger.info("Stopped session bot_id=%s chat_id=%s (bg tasks removed=%d)", bot_id, chat_id, len(bg_tasks))
         return True
 
     def list_sessions(self, bot_id: str | None = None) -> list[dict]:

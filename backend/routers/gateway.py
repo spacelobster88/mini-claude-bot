@@ -6,9 +6,10 @@ Claude CLI directly. Each (bot_id, chat_id) gets an isolated session.
 
 import asyncio
 import json
+import logging
 import threading
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -244,8 +245,14 @@ def gateway_background_status(chat_id: str, bot_id: str = Query(default="default
 
 
 @router.post("/cleanup/{chat_id}")
-def gateway_cleanup(chat_id: str, bot_id: str = Query(default="default")):
+def gateway_cleanup(chat_id: str, request: Request, bot_id: str = Query(default="default")):
     """Clean up stale (completed/failed) background tasks for the given chat_id."""
+    client_host = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    logging.getLogger("gateway.cleanup").info(
+        "Cleanup requested: chat_id=%s bot_id=%s host=%s ua=%s",
+        chat_id, bot_id, client_host, user_agent,
+    )
     manager = get_session_manager()
     result = manager.cleanup_stale_bg_tasks(chat_id, bot_id=bot_id)
     return result
