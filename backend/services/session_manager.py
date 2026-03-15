@@ -436,6 +436,16 @@ class SessionManager:
             return message
 
         context_parts = []
+
+        # Global memory — shared across all sessions/channels
+        global_memory_path = Path(os.path.expanduser("~/.mini-claude-bot/global-memory.md"))
+        if global_memory_path.exists():
+            try:
+                content = global_memory_path.read_text()[:2000]
+                context_parts.append(f"[Global Memory]:\n{content}")
+            except Exception as e:
+                logger.debug("Could not read global memory: %s", e)
+
         try:
             harness_dir = Path(session.cwd) / ".harness"
             if harness_dir.exists():
