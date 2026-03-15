@@ -40,7 +40,7 @@ def collect_metrics() -> dict:
     return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": "no cached data"}
 
 
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://mini-claude-bot-dashboard.vercel.app")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://mini-claude-bot.vercel.app")
 
 # Read METRICS_SECRET from env or dashboard .env file
 METRICS_SECRET = os.getenv("METRICS_SECRET", "")
