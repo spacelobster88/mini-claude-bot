@@ -40,67 +40,53 @@ def collect_metrics() -> dict:
     return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": "no cached data"}
 
 
-def get_vercel_token() -> str:
-    """Read Vercel CLI auth token."""
-    VERCEL_CLI_AUTH = Path.home() / "Library" / "Application Support" / "com.vercel.cli" / "auth.json"
-    if not VERCEL_CLI_AUTH.exists():
-        raise RuntimeError(f"Vercel CLI auth not found at {VERCEL_CLI_AUTH}")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://mini-claude-bot-dashboard.vercel.app")
 
-    auth = json.loads(VERCEL_CLI_AUTH.read_text())
-    token = auth.get("token")
-    return token
+# Read METRICS_SECRET from env or dashboard .env file
+METRICS_SECRET = os.getenv("METRICS_SECRET", "")
+if not METRICS_SECRET:
+    _env_path = Path(__file__).resolve().parent.parent.parent / "dashboard" / ".env.vercel"
+    if _env_path.exists():
+        for line in _env_path.read_text().splitlines():
+            if line.startswith("METRICS_SECRET="):
+                METRICS_SECRET = line.split("=", 1)[1].strip().strip('"')
+                break
 
 
 def push_to_vercel(metrics: dict) -> bool:
-    """Push metrics to Vercel Edge Config using curl."""
-    EDGE_CONFIG_ID = "ecfg_f46v94r95ijeifeq3n0xv0yai1ia"
-    VERCEL_CLI_AUTH = Path.home() / "Library" / "Application Support" / "com.vercel.cli" / "auth.json"
+    """Push metrics to the Vercel dashboard's /api/push endpoint (Blob-backed).
 
-    if not VERCEL_CLI_AUTH.exists():
-        raise RuntimeError(f"Vercel CLI auth not found at {VERCEL_CLI_AUTH}")
-
-    auth = json.loads(VERCEL_CLI_AUTH.read_text())
-    token = auth.get("token")
-
+    No Edge Config involved — the dashboard stores metrics in Vercel Blob.
+    """
     timestamp = metrics.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    push_url = f"{DASHBOARD_URL}/api/push"
 
-    # Prepare metrics data
-    metrics_data = {
-        "items": [
-            {"operation": "upsert", "key": "metrics_current", "value": json.dumps(metrics)},
-            {"operation": "upsert", "key": "metrics_last_push", "value": timestamp},
-        ]
-    }
-
-    # Use curl to push
     curl_cmd = [
-        "curl", "-X", "PATCH",
-        f"https://api.vercel.com/v1/edge-config/{EDGE_CONFIG_ID}/items",
-        "-H", f"Authorization: Bearer {token}",
+        "curl", "-s", "-X", "POST", push_url,
+        "-H", f"Authorization: Bearer {METRICS_SECRET}",
         "-H", "Content-Type: application/json",
-        "-d", json.dumps(metrics_data),
-        "--max-time", "30",  # 30 second timeout
+        "-d", json.dumps(metrics),
+        "--max-time", "30",
     ]
 
     try:
-        result = subprocess.run(
-            curl_cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-
+        result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
-            print(f"✅ OK: Pushed metrics at {timestamp}")
-            return True
+            resp = result.stdout.strip()
+            if '"ok":true' in resp or '"ok": true' in resp:
+                print(f"OK: Pushed metrics at {timestamp}")
+                return True
+            else:
+                print(f"ERROR: Push response: {resp[:200]}")
+                return False
         else:
-            print(f"❌ ERROR: {result.returncode} {result.stderr}")
+            print(f"ERROR: curl exit {result.returncode}: {result.stderr[:200]}")
             return False
     except subprocess.TimeoutExpired:
-        print(f"❌ ERROR: Request timed out after 30 seconds")
+        print("ERROR: Push timed out")
         return False
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"ERROR: {e}")
         return False
 
 
