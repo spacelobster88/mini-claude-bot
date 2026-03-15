@@ -1,5 +1,14 @@
-"""Aggregated metrics endpoint for the public dashboard."""
+"""Aggregated metrics endpoint for the public dashboard.
+
+Metrics are cached to a local JSON file by the /refresh endpoint (called by a
+5-minute CRON job). The /metrics endpoint serves from this cache for fast reads.
+"""
+import json
+import logging
+import os
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -7,14 +16,20 @@ from backend.db.engine import get_db
 from backend.services.claude_stats import read_claude_stats
 from backend.services.system_metrics import collect as collect_system
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
+METRICS_CACHE_PATH = Path(os.getenv(
+    "METRICS_CACHE_PATH",
+    os.path.expanduser("~/.mini-claude-bot/metrics_cache.json"),
+))
+_refresh_lock = threading.Lock()
 
-@router.get("/metrics")
-def get_metrics():
+
+def _collect_metrics() -> dict:
+    """Collect all dashboard metrics from DB and system."""
     db = get_db()
 
-    # Cron jobs
     rows = db.execute("SELECT * FROM cron_jobs ORDER BY id").fetchall()
     cron_jobs = [
         {
@@ -30,7 +45,6 @@ def get_metrics():
         for r in rows
     ]
 
-    # Memory stats
     mem_count = db.execute("SELECT COUNT(*) as c FROM memory").fetchone()["c"]
     mem_cats = db.execute(
         "SELECT category, COUNT(*) as c FROM memory GROUP BY category"
@@ -42,7 +56,6 @@ def get_metrics():
     ).fetchall()
     mem_items_list = [{"key": r["key"], "content": r["content"], "category": r["category"]} for r in mem_items]
 
-    # Claude stats (includes session/message counts and daily activity)
     claude = read_claude_stats()
 
     return {
@@ -64,3 +77,35 @@ def get_metrics():
         "claude_usage": claude,
         "system": collect_system(),
     }
+
+
+@router.post("/metrics/refresh")
+def refresh_metrics():
+    """Collect fresh metrics and cache to local JSON file.
+
+    Called by a 5-minute CRON job. The cached file is served by GET /metrics.
+    """
+    with _refresh_lock:
+        try:
+            metrics = _collect_metrics()
+            METRICS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(METRICS_CACHE_PATH, "w") as f:
+                json.dump(metrics, f)
+            logger.info("Metrics refreshed and cached to %s", METRICS_CACHE_PATH)
+            return {"status": "ok", "timestamp": metrics["timestamp"]}
+        except Exception as e:
+            logger.error("Failed to refresh metrics: %s", e)
+            return {"status": "error", "message": str(e)}
+
+
+@router.get("/metrics")
+def get_metrics():
+    """Serve metrics from cache. Falls back to live collection if no cache."""
+    if METRICS_CACHE_PATH.exists():
+        try:
+            with open(METRICS_CACHE_PATH) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Fallback: collect live (slower)
+    return _collect_metrics()
