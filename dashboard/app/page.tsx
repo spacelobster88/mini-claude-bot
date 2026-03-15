@@ -402,8 +402,15 @@ export default function Dashboard() {
                         <span className="text-sm font-medium text-gray-200">{job.project_name}</span>
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                           job.bg_status === "running" ? "bg-green-900/50 text-green-400" :
-                          "bg-yellow-900/50 text-yellow-400"
-                        }`}>{job.bg_status === "running" ? "running" : "stalled"}</span>
+                          job.in_progress > 0 ? "bg-yellow-900/50 text-yellow-400" :
+                          job.blocked > 0 ? "bg-red-900/50 text-red-400" :
+                          "bg-blue-900/50 text-blue-400"
+                        }`}>{
+                          job.bg_status === "running" ? "running" :
+                          job.in_progress > 0 ? "in progress" :
+                          job.blocked > 0 ? "blocked" :
+                          "idle"
+                        }</span>
                       </div>
                       <div className="text-xs text-gray-500 mb-1">
                         Phase: {job.current_phase} &middot; {job.done}/{job.total} tasks
