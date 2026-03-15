@@ -1043,6 +1043,14 @@ class SessionManager:
             if marker is None:
                 # No marker — normal background task, send full result
                 task_info["status"] = "completed"
+                # Check if this looks like a harness-related response that should have had a marker
+                harness_indicators = [".harness/", "tasks.json", "Execute Loop", "HARNESS_BATCH_DONE", "harness-loop"]
+                if result and any(indicator in result for indicator in harness_indicators):
+                    self._send_telegram_result(
+                        chat_id,
+                        "⚠️ Harness batch completed but no chain marker found. The loop may have stalled. Use /status to check, or resume manually.",
+                        bot_token,
+                    )
                 self._send_telegram_result(chat_id, result, bot_token)
             elif marker["type"] == "batch_done":
                 phase = marker["phase"]
