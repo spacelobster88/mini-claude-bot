@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     await put("metrics_current.json", JSON.stringify(payload), {
       access: "public",
       addRandomSuffix: false,
+      allowOverwrite: true,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
