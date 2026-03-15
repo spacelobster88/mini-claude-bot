@@ -1277,6 +1277,64 @@ class SessionManager:
             "elapsed_seconds": elapsed,
         }
 
+    def cleanup_stale_bg_tasks(self, chat_id: str, bot_id: str = "default") -> dict:
+        """Clean up completed/failed background tasks for a chat_id.
+
+        - Running tasks with live threads are skipped.
+        - Completed/failed tasks get their harness data archived and are removed.
+        - Returns summary dict with cleaned/archived/skipped counts.
+        """
+        tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
+
+        cleaned = 0
+        archived = 0
+        skipped = 0
+        details = []
+
+        for bg_key, task in list(tasks.items()):
+            status = task["status"]
+            thread = task.get("thread")
+            cwd = task.get("cwd")
+            project_id = task.get("project_id", "unknown")
+
+            # Skip running tasks with live threads
+            if status == "running" and thread and thread.is_alive():
+                skipped += 1
+                details.append(f"Skipped running: {project_id}")
+                continue
+
+            # If status is "running" but thread is dead, treat as failed
+            if status == "running":
+                task["status"] = "failed"
+                task["result"] = "Thread died (cleaned up)"
+                status = "failed"
+
+            # Archive harness data if session exists
+            if cwd:
+                harness_dir = Path(cwd) / ".harness"
+                if harness_dir.exists():
+                    # Find the session to archive
+                    session_key = self._session_key(bot_id, f"bg-{chat_id}-{project_id}")
+                    session = self._sessions.get(session_key)
+                    if session:
+                        archive_id = self._archive_harness(session)
+                        if archive_id:
+                            archived += 1
+                            details.append(f"Archived: {project_id}")
+
+            # Remove the bg task entry
+            with self._global_lock:
+                self._bg_tasks.pop(bg_key, None)
+            cleaned += 1
+            details.append(f"Cleaned ({status}): {project_id}")
+
+        return {
+            "cleaned": cleaned,
+            "archived": archived,
+            "skipped": skipped,
+            "details": details,
+        }
+
     def stop_session(self, chat_id: str, bot_id: str = "default") -> bool:
         """Stop and clean up a session, killing any running process."""
         key = self._session_key(bot_id, chat_id)

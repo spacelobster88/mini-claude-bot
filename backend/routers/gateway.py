@@ -243,4 +243,12 @@ def gateway_background_status(chat_id: str, bot_id: str = Query(default="default
     return manager.get_background_status(chat_id, bot_id=bot_id)
 
 
+@router.post("/cleanup/{chat_id}")
+def gateway_cleanup(chat_id: str, bot_id: str = Query(default="default")):
+    """Clean up stale (completed/failed) background tasks for the given chat_id."""
+    manager = get_session_manager()
+    result = manager.cleanup_stale_bg_tasks(chat_id, bot_id=bot_id)
+    return result
+
+
 
