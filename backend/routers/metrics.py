@@ -28,9 +28,10 @@ def _collect_harness_summary() -> dict:
     from backend.services.session_manager import get_session_manager
 
     running_jobs = []
+    seen_cwds = set()
     try:
         manager = get_session_manager()
-        # Scan all bg tasks for running harness loops
+        # 1. Scan bg tasks for actively running harness loops
         for key, task in manager._bg_tasks.items():
             cwd = task.get("cwd")
             if not cwd:
@@ -38,6 +39,7 @@ def _collect_harness_summary() -> dict:
             harness = manager._read_harness_progress(cwd)
             if harness is None:
                 continue
+            seen_cwds.add(cwd)
             running_jobs.append({
                 "bg_status": task.get("status", "unknown"),
                 "elapsed_seconds": int(time.time() - task.get("started_at", time.time())),
@@ -50,6 +52,31 @@ def _collect_harness_summary() -> dict:
                 "in_progress": harness.get("in_progress", 0),
                 "blocked": harness.get("blocked", 0),
             })
+
+        # 2. Scan filesystem for .harness/ directories in active sessions
+        from backend.services.session_manager import SESSION_BASE_DIR
+        base = Path(SESSION_BASE_DIR)
+        if base.exists():
+            for harness_dir in base.glob("*/*/.harness"):
+                cwd = str(harness_dir.parent)
+                if cwd in seen_cwds:
+                    continue
+                harness = manager._read_harness_progress(cwd)
+                if harness is None:
+                    continue
+                chat_id = harness_dir.parent.name
+                running_jobs.append({
+                    "bg_status": "idle",
+                    "elapsed_seconds": 0,
+                    "chain_depth": 0,
+                    "project_id": chat_id[:8],
+                    "project_name": harness.get("project_name", "unknown"),
+                    "current_phase": harness.get("current_phase", "unknown"),
+                    "done": harness.get("done", 0),
+                    "total": harness.get("total", 0),
+                    "in_progress": harness.get("in_progress", 0),
+                    "blocked": harness.get("blocked", 0),
+                })
     except Exception as e:
         logger.warning("Failed to collect harness jobs: %s", e)
 

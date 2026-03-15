@@ -84,6 +84,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
+  const [showAllJobs, setShowAllJobs] = useState(false);
 
   const fetchMetrics = async () => {
     try {
@@ -262,9 +263,9 @@ export default function Dashboard() {
         </Card>
 
         {/* Scheduled Jobs */}
-        <Card title="Scheduled Jobs">
+        <Card title={`Scheduled Jobs (${jobs.length})`}>
           <div className="space-y-2">
-            {jobs.map((job) => (
+            {(showAllJobs ? jobs : jobs.slice(0, 5)).map((job) => (
               <div key={job.id} className="bg-gray-800 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm font-medium truncate mr-2">{job.name}</span>
@@ -281,6 +282,14 @@ export default function Dashboard() {
                 )}
               </div>
             ))}
+            {jobs.length > 5 && (
+              <button
+                onClick={() => setShowAllJobs(!showAllJobs)}
+                className="w-full text-xs text-blue-400 hover:text-blue-300 py-1.5 bg-gray-800/50 rounded-lg transition-colors"
+              >
+                {showAllJobs ? "Show less" : `Show all ${jobs.length} jobs`}
+              </button>
+            )}
           </div>
         </Card>
 
