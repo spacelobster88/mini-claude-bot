@@ -1051,17 +1051,66 @@ class SessionManager:
             marker = self._parse_harness_marker(result)
 
             if marker is None:
-                # No marker — normal background task, send full result
+                # No marker — check if this is a harness session that should auto-chain
                 task_info["status"] = "completed"
-                # Check if this looks like a harness-related response that should have had a marker
-                harness_indicators = [".harness/", "tasks.json", "Execute Loop", "HARNESS_BATCH_DONE", "harness-loop"]
-                if result and any(indicator in result for indicator in harness_indicators):
-                    self._send_telegram_result(
-                        chat_id,
-                        "⚠️ Harness batch completed but no chain marker found. The loop may have stalled. Use /status to check, or resume manually.",
-                        bot_token,
-                    )
-                self._send_telegram_result(chat_id, result, bot_token)
+
+                # If the bg session has a .harness/ with remaining tasks, auto-chain
+                harness_progress = self._read_harness_progress(
+                    task.get("cwd") if isinstance(task, dict) else None
+                ) if task_info.get("cwd") else None
+                # Use task_info's cwd
+                cwd = task_info.get("cwd")
+                if cwd:
+                    harness_progress = self._read_harness_progress(cwd)
+                else:
+                    harness_progress = None
+
+                if harness_progress and harness_progress.get("total", 0) > 0:
+                    done = harness_progress.get("done", 0)
+                    total = harness_progress.get("total", 0)
+
+                    if done >= total:
+                        # All done — treat as HARNESS_COMPLETE
+                        self._send_telegram_result(
+                            chat_id,
+                            f"✅ Harness loop complete! All {total} tasks finished. (Marker was missing but tasks.json confirms completion.)",
+                            bot_token,
+                        )
+                    elif done > 0 or harness_progress.get("in_progress", 0) == 0:
+                        # Tasks remain — auto-chain even without marker
+                        logger.warning(
+                            "No harness marker but tasks.json shows %d/%d done. Auto-chaining.",
+                            done, total,
+                        )
+                        self._send_telegram_result(
+                            chat_id,
+                            f"📊 Batch completed (no marker). tasks.json: {done}/{total} done. Auto-chaining...",
+                            bot_token,
+                        )
+                        if chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
+                            time.sleep(HARNESS_CHAIN_DELAY)
+                            chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
+                            chain_result = self.send_background(
+                                chat_id, chain_message, bot_token,
+                                bot_id=bot_id, chain_depth=chain_depth + 1,
+                                project_id=project_id,
+                            )
+                            if chain_result.get("status") != "started":
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"⚠️ Auto-chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
+                                    bot_token,
+                                )
+                    else:
+                        # No progress — might be genuinely stuck
+                        self._send_telegram_result(
+                            chat_id,
+                            f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
+                            bot_token,
+                        )
+                else:
+                    # Not a harness session — send full result normally
+                    self._send_telegram_result(chat_id, result, bot_token)
             elif marker["type"] == "batch_done":
                 phase = marker["phase"]
                 done = marker["done"]
