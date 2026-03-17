@@ -7,7 +7,7 @@ export const revalidate = 0;
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN ?? process.env.VERCEL_BLOB_READ_WRITE_TOKEN ?? process.env.BLOB_TOKEN;
 
 async function fetchMetricsFromBlob(blobPath: string) {
-  const res = await get(blobPath, { access: "private", token: BLOB_TOKEN, useCache: false });
+  const res = await get(blobPath, { access: "public", token: BLOB_TOKEN, useCache: false });
   if (!res?.stream) throw new Error("blob stream unavailable");
   const reader = res.stream.getReader();
   const decoder = new TextDecoder();
