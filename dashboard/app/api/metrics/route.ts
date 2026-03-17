@@ -12,8 +12,11 @@ export async function GET() {
     }
 
     const blob = blobs[0];
-    // Cache-bust: append timestamp to avoid CDN caching stale blob URLs
-    const fetchUrl = `${blob.url}?t=${Date.now()}`;
+    // Prefer the signed download URL (private blobs return 403 on the raw URL)
+    const baseUrl = blob.downloadUrl ?? blob.url;
+    const urlObj = new URL(baseUrl);
+    urlObj.searchParams.set("t", Date.now().toString());
+    const fetchUrl = urlObj.toString();
     const res = await fetch(fetchUrl, { cache: "no-store" });
     if (!res.ok) {
       return NextResponse.json(
