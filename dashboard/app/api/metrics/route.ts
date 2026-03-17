@@ -11,13 +11,29 @@ export async function GET() {
       return NextResponse.json({ error: "no data yet" }, { status: 404 });
     }
 
-    const blob = blobs[0];
-    // Prefer the signed download URL (private blobs return 403 on the raw URL)
-    const baseUrl = blob.downloadUrl ?? blob.url;
-    const urlObj = new URL(baseUrl);
-    urlObj.searchParams.set("t", Date.now().toString());
-    const fetchUrl = urlObj.toString();
-    const res = await fetch(fetchUrl, { cache: "no-store" });
+    const latest = [...blobs]
+      .sort((a, b) => new Date(b.uploadedAt ?? '').getTime() - new Date(a.uploadedAt ?? '').getTime())[0]
+      ?? blobs[0];
+    const blob = latest;
+    const signedUrl = blob.downloadUrl;
+    const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.BLOB_TOKEN;
+
+    let fetchUrl = blob.url;
+    const headers: Record<string, string> = {};
+
+    if (signedUrl) {
+      fetchUrl = signedUrl;
+    } else {
+      fetchUrl = `${blob.url}?t=${Date.now()}`;
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+
+    const res = await fetch(fetchUrl, {
+      cache: 'no-store',
+      headers: Object.keys(headers).length ? headers : undefined,
+    });
     if (!res.ok) {
       return NextResponse.json(
         { error: "failed to read metrics", status: res.status, url: blob.url },
