@@ -6,7 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("mini-claude-bot")
 
-API_BASE = os.getenv("MCB_API_BASE", "http://localhost:8000/api")
+API_BASE = os.getenv("MCB_API_BASE", "http://127.0.0.1:8000/api")
 DEFAULT_TIMEOUT = int(os.getenv("MCB_MCP_TIMEOUT", "30"))
 GATEWAY_TIMEOUT = int(os.getenv("MCB_GATEWAY_TIMEOUT", "960"))  # 16min, exceeds CLAUDE_TIMEOUT (15min)
 DEFAULT_BOT_ID = os.getenv("MCB_BOT_ID", "default")

@@ -28,7 +28,7 @@ def collect_metrics() -> dict:
     # Fallback: call the local refresh API
     try:
         import urllib.request
-        req = urllib.request.Request("http://localhost:8000/api/metrics/refresh", method="POST")
+        req = urllib.request.Request("http://127.0.0.1:8000/api/metrics/refresh", method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             pass
         if os.path.exists(METRICS_CACHE_PATH):
