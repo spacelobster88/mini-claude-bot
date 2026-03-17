@@ -86,7 +86,7 @@ function trimMetrics(payload: any) {
     data.claude_usage.daily_activity = data.claude_usage.daily_activity.slice(-14);
   }
   if (data.claude_usage?.model_usage && typeof data.claude_usage.model_usage === 'object') {
-    const entries = Object.entries(data.claude_usage.model_usage)
+    const entries = (Object.entries(data.claude_usage.model_usage as Record<string, { requests?: number }> ) as [string, { requests?: number }][])
       .sort((a, b) => (b[1]?.requests || 0) - (a[1]?.requests || 0))
       .slice(0, 2);
     data.claude_usage.model_usage = Object.fromEntries(entries);
