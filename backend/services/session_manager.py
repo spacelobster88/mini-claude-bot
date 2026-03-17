@@ -1054,16 +1054,8 @@ class SessionManager:
                 # No marker — check if this is a harness session that should auto-chain
                 task_info["status"] = "completed"
 
-                # If the bg session has a .harness/ with remaining tasks, auto-chain
-                harness_progress = self._read_harness_progress(
-                    task.get("cwd") if isinstance(task, dict) else None
-                ) if task_info.get("cwd") else None
-                # Use task_info's cwd
                 cwd = task_info.get("cwd")
-                if cwd:
-                    harness_progress = self._read_harness_progress(cwd)
-                else:
-                    harness_progress = None
+                harness_progress = self._read_harness_progress(cwd) if cwd else None
 
                 if harness_progress and harness_progress.get("total", 0) > 0:
                     done = harness_progress.get("done", 0)
