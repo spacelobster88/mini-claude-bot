@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const metrics = await req.json();
+  const metrics = trimMetrics(await req.json());
   const timestamp = new Date().toISOString();
 
   try {
@@ -43,3 +43,63 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "edge config write failed", detail: message }, { status: 500 });
   }
 }
+
+function trimMetrics(payload: any) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const data = JSON.parse(JSON.stringify(payload));
+
+  if (Array.isArray(data.cron_jobs)) {
+    const allowedKeys = new Set(['id', 'name', 'cron_expression', 'enabled', 'last_run_at', 'last_result_preview', 'timezone']);
+    data.cron_jobs = data.cron_jobs.slice(0, 8).map((job: any) => {
+      const trimmed: Record<string, any> = {};
+      for (const key of allowedKeys) {
+        if (job?.[key] !== undefined) trimmed[key] = job[key];
+      }
+      if (typeof trimmed.last_result_preview === 'string' && trimmed.last_result_preview.length > 160) {
+        trimmed.last_result_preview = `${trimmed.last_result_preview.slice(0, 100)}…`;
+      }
+      return trimmed;
+    });
+  }
+
+  if (data.memory?.items && Array.isArray(data.memory.items)) {
+    const perCategory = 1;
+    const totalLimit = 10;
+    const counts: Record<string, number> = {};
+    const limited: any[] = [];
+    for (const item of data.memory.items) {
+      if (limited.length >= totalLimit) break;
+      const cat = item?.category ?? 'general';
+      counts[cat] = counts[cat] ?? 0;
+      if (counts[cat] >= perCategory) continue;
+      counts[cat]++;
+      const trimmedItem = { ...item } as any;
+      if (typeof trimmedItem.content === 'string' && trimmedItem.content.length > 160) {
+        trimmedItem.content = `${trimmedItem.content.slice(0, 160)}…`;
+      }
+      limited.push(trimmedItem);
+    }
+    data.memory.items = limited;
+  }
+
+  if (data.claude_usage?.daily_activity && Array.isArray(data.claude_usage.daily_activity)) {
+    data.claude_usage.daily_activity = data.claude_usage.daily_activity.slice(-14);
+  }
+  if (data.claude_usage?.model_usage && typeof data.claude_usage.model_usage === 'object') {
+    const entries = Object.entries(data.claude_usage.model_usage)
+      .sort((a, b) => (b[1]?.requests || 0) - (a[1]?.requests || 0))
+      .slice(0, 2);
+    data.claude_usage.model_usage = Object.fromEntries(entries);
+  }
+
+  if (data.harness) {
+    for (const key of ['running_jobs', 'completed_jobs']) {
+      if (Array.isArray(data.harness[key])) {
+        data.harness[key] = data.harness[key].slice(0, 3);
+      }
+    }
+  }
+
+  return data;
+}
+
