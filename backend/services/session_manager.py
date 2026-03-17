@@ -997,7 +997,7 @@ class SessionManager:
         # Check if a background task is already running for this project
         with self._global_lock:
             existing = self._bg_tasks.get(bg_key)
-            if existing and existing["status"] == "running":
+            if existing and existing["status"] in ("running", "chaining"):
                 thread = existing.get("thread")
                 if thread and thread.is_alive():
                     elapsed = time.time() - existing.get("started_at", 0)
@@ -1066,7 +1066,10 @@ class SessionManager:
                 phase = marker["phase"]
                 done = marker["done"]
                 total = marker["total"]
-                task_info["status"] = "completed"
+                # Keep status as "running" during chain window to prevent
+                # concurrent overwrites. Will be set to "completed" after
+                # the chain call succeeds (or fails).
+                task_info["status"] = "chaining"
                 # Send short progress to Telegram
                 self._send_telegram_result(
                     chat_id,
@@ -1084,11 +1087,26 @@ class SessionManager:
                 # Delay then chain next batch
                 time.sleep(HARNESS_CHAIN_DELAY)
                 chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
-                self.send_background(
+                chain_result = self.send_background(
                     chat_id, chain_message, bot_token,
                     bot_id=bot_id, chain_depth=chain_depth + 1,
                     project_id=project_id,
                 )
+                # Mark this batch as completed now that chain is dispatched (or failed)
+                task_info["status"] = "completed"
+                if chain_result.get("status") != "started":
+                    reason = chain_result.get("reason", "unknown")
+                    logger.error(
+                        "Harness chain dispatch FAILED for chat_id=%s depth=%d: %s",
+                        chat_id, chain_depth + 1, chain_result,
+                    )
+                    self._send_telegram_result(
+                        chat_id,
+                        f"⚠️ Harness chain dispatch failed: {reason}\n"
+                        f"Batch {done}/{total} done but next batch could not start.\n"
+                        f"Use /status to check, then resume manually.",
+                        bot_token,
+                    )
             elif marker["type"] == "blocked":
                 task_info["status"] = "completed"
                 task_id = marker["task_id"]
@@ -1145,10 +1163,10 @@ class SessionManager:
                 )
 
     def _parse_harness_marker(self, result: str) -> dict | None:
-        """Search the last 500 chars of result for harness batch-chaining markers."""
+        """Search the last 2000 chars of result for harness batch-chaining markers."""
         if not result:
             return None
-        tail = result[-500:]
+        tail = result[-2000:]
 
         if HARNESS_COMPLETE_MARKER in tail:
             return {"type": "complete"}
