@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  const vercelToken = process.env.VERCEL_API_TOKEN;
+  const vercelToken = process.env.VERCEL_MANAGEMENT_TOKEN;
   const edgeConfigId = process.env.EDGE_CONFIG_ID;
   if (!vercelToken || !edgeConfigId) {
     return NextResponse.json({ ok: false, error: "missing edge config credentials" }, { status: 500 });
