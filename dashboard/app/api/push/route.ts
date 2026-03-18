@@ -1,3 +1,4 @@
+import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -11,37 +12,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  const vercelToken = process.env.VERCEL_MANAGEMENT_TOKEN;
-  const edgeConfigId = process.env.EDGE_CONFIG_ID;
-  if (!vercelToken || !edgeConfigId) {
-    return NextResponse.json({ ok: false, error: "missing edge config credentials" }, { status: 500 });
-  }
-
   try {
     const metrics = await req.json();
     const timestamp = metrics.timestamp ?? new Date().toISOString();
+    metrics._last_push = timestamp;
 
-    const resp = await fetch(
-      `https://api.vercel.com/v1/edge-config/${edgeConfigId}/items`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${vercelToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          items: [
-            { operation: "upsert", key: "metrics_current", value: metrics },
-            { operation: "upsert", key: "metrics_last_push", value: timestamp },
-          ],
-        }),
-      },
-    );
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      return NextResponse.json({ ok: false, error: `edge config: ${resp.status}`, detail: body }, { status: 502 });
-    }
+    await put("metrics/current.json", JSON.stringify(metrics), {
+      access: "public",
+      addRandomSuffix: false,
+      contentType: "application/json",
+    });
 
     return NextResponse.json({ ok: true });
   } catch (err) {
