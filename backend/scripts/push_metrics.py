@@ -25,8 +25,8 @@ def trim_limit_metrics(metrics: dict) -> None:
         for job in cron[:8]:
             job = {k: job.get(k) for k in allowed_keys}
             preview = job.get("last_result_preview")
-            if isinstance(preview, str) and len(preview) > 100:
-                job["last_result_preview"] = preview[:100] + "…"
+            if isinstance(preview, str) and len(preview) > 60:
+                job["last_result_preview"] = preview[:60] + "…"
             trimmed.append(job)
         metrics["cron_jobs"] = trimmed
 
@@ -35,7 +35,7 @@ def trim_limit_metrics(metrics: dict) -> None:
         items = memory.get("items")
         if isinstance(items, list):
             per_cat_limit = 1
-            total_limit = 10
+            total_limit = 7
             per_cat_counts = {}
             limited = []
             for item in items:
@@ -70,6 +70,18 @@ def trim_limit_metrics(metrics: dict) -> None:
             arr = harness.get(key)
             if isinstance(arr, list) and len(arr) > 3:
                 harness[key] = arr[:3]
+        archived = harness.get("archived_projects")
+        if isinstance(archived, list):
+            # Keep only recent 10, trim to essential fields
+            trimmed_archived = []
+            for p in archived[-8:]:
+                trimmed_archived.append({
+                    "project_name": (p.get("project_name") or "unknown")[:50],
+                    "archived_at": p.get("archived_at"),
+                    "tasks_done": p.get("tasks_done", 0),
+                    "tasks_total": p.get("tasks_total", 0),
+                })
+            harness["archived_projects"] = trimmed_archived
 
     services = metrics.get("services")
     if isinstance(services, list) and len(services) > 12:
@@ -110,32 +122,53 @@ def collect_metrics() -> dict:
     return {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": "no cached data"}
 
 
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://mini-claude-bot-dashboard.vercel.app")
+AUTH_FILE = Path.home() / "Library" / "Application Support" / "com.vercel.cli" / "auth.json"
 
-# Read METRICS_SECRET from env or dashboard .env file
-METRICS_SECRET = os.getenv("METRICS_SECRET", "")
-if not METRICS_SECRET:
+# Read Edge Config ID from dashboard .env.vercel
+EDGE_CONFIG_ID = os.getenv("EDGE_CONFIG_ID", "")
+if not EDGE_CONFIG_ID:
     _env_path = Path(__file__).resolve().parent.parent.parent / "dashboard" / ".env.vercel"
     if _env_path.exists():
         for line in _env_path.read_text().splitlines():
-            if line.startswith("METRICS_SECRET="):
-                METRICS_SECRET = line.split("=", 1)[1].strip().strip('"')
+            if line.startswith("EDGE_CONFIG_ID="):
+                EDGE_CONFIG_ID = line.split("=", 1)[1].strip().strip('"')
                 break
 
 
-def push_to_vercel(metrics: dict) -> bool:
-    """Push metrics to the Vercel dashboard's /api/push endpoint (Blob-backed).
+def _get_vercel_token() -> str:
+    """Read the fresh Vercel CLI token from auth.json."""
+    try:
+        with open(AUTH_FILE) as f:
+            return json.load(f)["token"]
+    except Exception as e:
+        print(f"ERROR: Could not read Vercel CLI token: {e}")
+        return ""
 
-    No Edge Config involved — the dashboard stores metrics in Vercel Blob.
+
+def push_to_vercel(metrics: dict) -> bool:
+    """Push metrics directly to Vercel Edge Config using the local CLI token.
+
+    Bypasses the serverless function to avoid stale-token issues.
     """
+    token = _get_vercel_token()
+    if not token or not EDGE_CONFIG_ID:
+        print("ERROR: Missing Vercel CLI token or EDGE_CONFIG_ID")
+        return False
+
     timestamp = metrics.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-    push_url = f"{DASHBOARD_URL}/api/push"
+    payload = json.dumps({
+        "items": [
+            {"operation": "upsert", "key": "metrics_current", "value": metrics},
+            {"operation": "upsert", "key": "metrics_last_push", "value": timestamp},
+        ]
+    })
 
     curl_cmd = [
-        "curl", "-s", "-X", "POST", push_url,
-        "-H", f"Authorization: Bearer {METRICS_SECRET}",
+        "curl", "-s", "-X", "PATCH",
+        f"https://api.vercel.com/v1/edge-config/{EDGE_CONFIG_ID}/items",
+        "-H", f"Authorization: Bearer {token}",
         "-H", "Content-Type: application/json",
-        "-d", json.dumps(metrics),
+        "-d", payload,
         "--max-time", "30",
     ]
 
@@ -143,11 +176,11 @@ def push_to_vercel(metrics: dict) -> bool:
         result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             resp = result.stdout.strip()
-            if '"ok":true' in resp or '"ok": true' in resp:
+            if '"ok"' in resp or '"status":"ok"' in resp:
                 print(f"OK: Pushed metrics at {timestamp}")
                 return True
             else:
-                print(f"ERROR: Push response: {resp[:200]}")
+                print(f"ERROR: Edge Config response: {resp[:200]}")
                 return False
         else:
             print(f"ERROR: curl exit {result.returncode}: {result.stderr[:200]}")

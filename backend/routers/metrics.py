@@ -80,13 +80,20 @@ def _collect_harness_summary() -> dict:
     except Exception as e:
         logger.warning("Failed to collect harness jobs: %s", e)
 
-    # Count archived harness loops
-    archived_count = 0
+    # Load archived harness loops with details
+    archived_projects = []
     try:
         if HARNESS_ARCHIVE_INDEX.exists():
             with open(HARNESS_ARCHIVE_INDEX) as f:
                 index = json.load(f)
-                archived_count = len(index)
+                for entry in index:
+                    archived_projects.append({
+                        "project_name": entry.get("project_name", "unknown"),
+                        "archived_at": entry.get("archived_at"),
+                        "tasks_done": entry.get("tasks_done", 0),
+                        "tasks_total": entry.get("tasks_total", 0),
+                        "status": entry.get("status", "unknown"),
+                    })
     except Exception:
         pass
 
@@ -97,7 +104,8 @@ def _collect_harness_summary() -> dict:
     return {
         "running_jobs": active_jobs,
         "completed_jobs": completed_jobs,
-        "archived_count": archived_count,
+        "archived_count": len(archived_projects),
+        "archived_projects": archived_projects,
     }
 
 

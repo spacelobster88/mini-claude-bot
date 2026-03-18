@@ -22,10 +22,19 @@ export interface HarnessJob {
   blocked: number;
 }
 
+export interface ArchivedProject {
+  project_name: string;
+  archived_at: string | null;
+  tasks_done: number;
+  tasks_total: number;
+  status: string;
+}
+
 export interface HarnessSummary {
   running_jobs: HarnessJob[];
   completed_jobs: HarnessJob[];
   archived_count: number;
+  archived_projects?: ArchivedProject[];
 }
 
 export interface DbHealth {

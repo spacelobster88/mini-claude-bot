@@ -70,6 +70,72 @@ function MemoryBar({ sys }: { sys: DashboardMetrics["system"] }) {
   );
 }
 
+function HarnessTabList({ harness }: { harness: DashboardMetrics["harness"] }) {
+  const [activeTab, setActiveTab] = useState<"completed" | "archived" | null>(null);
+  if (!harness) return null;
+
+  const completed = harness.completed_jobs || [];
+  const archived = harness.archived_projects || [];
+
+  const toggle = (tab: "completed" | "archived") => {
+    setActiveTab(activeTab === tab ? null : tab);
+  };
+
+  return (
+    <div className="pt-2 border-t border-gray-800">
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => toggle("completed")} className={`rounded-lg p-2.5 text-center transition-colors ${activeTab === "completed" ? "bg-emerald-900/30 ring-1 ring-emerald-700" : "bg-gray-800 hover:bg-gray-750"}`}>
+          <div className="text-lg font-bold text-emerald-400">{completed.length}</div>
+          <div className="text-[10px] text-gray-500">Completed</div>
+        </button>
+        <button onClick={() => toggle("archived")} className={`rounded-lg p-2.5 text-center transition-colors ${activeTab === "archived" ? "bg-gray-700/50 ring-1 ring-gray-600" : "bg-gray-800 hover:bg-gray-750"}`}>
+          <div className="text-lg font-bold text-gray-400">{harness.archived_count}</div>
+          <div className="text-[10px] text-gray-500">Archived</div>
+        </button>
+      </div>
+
+      {activeTab === "completed" && completed.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {completed.map((job) => (
+            <div key={job.project_id} className="bg-gray-800/60 rounded-lg px-3 py-2 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-200 truncate">{job.project_name}</div>
+                <div className="text-[10px] text-gray-500">{job.done}/{job.total} tasks</div>
+              </div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">complete</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {activeTab === "completed" && completed.length === 0 && (
+        <div className="text-xs text-gray-600 mt-2">No completed projects</div>
+      )}
+
+      {activeTab === "archived" && archived.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {[...archived].reverse().map((p, i) => (
+            <div key={i} className="bg-gray-800/60 rounded-lg px-3 py-2 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-xs text-gray-200 truncate">{p.project_name}</div>
+                <div className="text-[10px] text-gray-500">
+                  {p.tasks_done}/{p.tasks_total} tasks
+                  {p.archived_at && <span> &middot; {timeAgo(p.archived_at)}</span>}
+                </div>
+              </div>
+              {p.archived_at && (
+                <div className="text-[10px] text-gray-500 shrink-0 ml-2">{new Date(p.archived_at).toLocaleDateString()}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {activeTab === "archived" && archived.length === 0 && (
+        <div className="text-xs text-gray-600 mt-2">No archived projects</div>
+      )}
+    </div>
+  );
+}
+
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -431,18 +497,7 @@ export default function Dashboard() {
             {harness && harness.running_jobs.length === 0 && (
               <div className="text-xs text-gray-600">No active harness loops</div>
             )}
-            {harness && (
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800">
-                <div className="bg-gray-800 rounded-lg p-2.5 text-center">
-                  <div className="text-lg font-bold text-emerald-400">{harness.completed_jobs?.length || 0}</div>
-                  <div className="text-[10px] text-gray-500">Completed</div>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-2.5 text-center">
-                  <div className="text-lg font-bold text-gray-400">{harness.archived_count}</div>
-                  <div className="text-[10px] text-gray-500">Archived</div>
-                </div>
-              </div>
-            )}
+            {harness && <HarnessTabList harness={harness} />}
           </div>
         </Card>
       </div>
