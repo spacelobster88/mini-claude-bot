@@ -748,7 +748,7 @@ class SessionManager:
     def _has_running_bg_task(self, bot_id: str, chat_id: str) -> bool:
         """Check if ANY background task is running for this chat_id."""
         for key, task in self._find_bg_tasks_for_chat(bot_id, chat_id).items():
-            if task["status"] in ("running", "chaining"):
+            if task["status"] == "running":
                 thread = task.get("thread")
                 if thread and thread.is_alive():
                     return True
@@ -1002,7 +1002,7 @@ class SessionManager:
         # Check if a background task is already running for this project
         with self._global_lock:
             existing = self._bg_tasks.get(bg_key)
-            if existing and existing["status"] in ("running", "chaining"):
+            if existing and existing["status"] == "running":
                 thread = existing.get("thread")
                 if thread and thread.is_alive():
                     elapsed = time.time() - existing.get("started_at", 0)
@@ -1113,10 +1113,13 @@ class SessionManager:
                     phase = marker["phase"]
                     done = marker["done"]
                     total = marker["total"]
-                    # Keep status as "running" during chain window to prevent
-                    # concurrent overwrites. Will be set to "completed" after
-                    # the chain call succeeds (or fails).
-                    task_info["status"] = "chaining"
+                    # Mark completed BEFORE the chain delay — the batch IS
+                    # finished. This prevents the race where send_background()
+                    # sees the current task as still active (thread alive +
+                    # status "chaining") and rejects with "already running".
+                    # Matches the pattern used by the "no marker" auto-chain
+                    # path at line ~1061. See issue #5.
+                    task_info["status"] = "completed"
                     # Send short progress to Telegram
                     self._send_telegram_result(
                         chat_id,
@@ -1140,10 +1143,9 @@ class SessionManager:
                         bot_id=bot_id, chain_depth=chain_depth + 1,
                         project_id=project_id,
                     )
-                    # Fix A2: Only mark completed if chain actually started
-                    if chain_result.get("status") == "started":
-                        task_info["status"] = "completed"
-                    else:
+                    # Task is already "completed" (batch finished). Only
+                    # override to "chain_failed" if dispatch failed.
+                    if chain_result.get("status") != "started":
                         task_info["status"] = "chain_failed"
                         reason = chain_result.get("reason", "unknown")
                         logger.error(
@@ -1184,7 +1186,7 @@ class SessionManager:
                     pass
             finally:
                 # Fix A1: Ensure status is ALWAYS terminal
-                if task_info["status"] in ("running", "chaining"):
+                if task_info["status"] == "running":
                     logger.warning(
                         "Background task for chat_id=%s ended with non-terminal status '%s', forcing to 'failed'",
                         chat_id, task_info["status"],
