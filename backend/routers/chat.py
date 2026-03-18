@@ -44,12 +44,20 @@ def list_sessions(bot_id: str = Query(default=None)):
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: str):
+def get_session(session_id: str, limit: int = Query(default=0, ge=0)):
     db = get_db()
-    rows = db.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
-        (session_id,),
-    ).fetchall()
+    if limit > 0:
+        rows = db.execute(
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        # Reverse to chronological order
+        rows = list(reversed(rows))
+    else:
+        rows = db.execute(
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        ).fetchall()
     if not rows:
         raise HTTPException(404, "Session not found")
     return [dict(r) for r in rows]
