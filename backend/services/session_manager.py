@@ -747,11 +747,16 @@ class SessionManager:
 
     def _has_running_bg_task(self, bot_id: str, chat_id: str) -> bool:
         """Check if ANY background task is running for this chat_id."""
-        for task in self._find_bg_tasks_for_chat(bot_id, chat_id).values():
-            if task["status"] == "running":
+        for key, task in self._find_bg_tasks_for_chat(bot_id, chat_id).items():
+            if task["status"] in ("running", "chaining"):
                 thread = task.get("thread")
                 if thread and thread.is_alive():
                     return True
+                else:
+                    # Fix B1: Dead thread detected — auto-recover
+                    logger.warning("Dead bg thread detected for %s (status=%s), auto-recovering", key, task["status"])
+                    task["status"] = "failed"
+                    task["result"] = (task.get("result") or "") + " [AUTO-RECOVERED: thread died]"
         return False
 
     def _should_route_to_fg(self, chat_id: str, bot_id: str) -> bool:
@@ -1038,132 +1043,153 @@ class SessionManager:
 
         def _run():
             try:
-                result = self.send(bg_session_key, message, bot_id=bot_id)
-                task_info["result"] = result[:500] if result else ""
-            except Exception as e:
-                result = f"[ERROR] Background task failed: {e}"
-                task_info["status"] = "failed"
-                task_info["result"] = result[:500]
-                self._send_telegram_result(chat_id, result, bot_token)
-                return
-
-            # Check for harness batch-chaining markers
-            marker = self._parse_harness_marker(result)
-
-            if marker is None:
-                # No marker — check if this is a harness session that should auto-chain
-                task_info["status"] = "completed"
-
-                cwd = task_info.get("cwd")
-                harness_progress = self._read_harness_progress(cwd) if cwd else None
-
-                if harness_progress and harness_progress.get("total", 0) > 0:
-                    done = harness_progress.get("done", 0)
-                    total = harness_progress.get("total", 0)
-
-                    if done >= total:
-                        # All done — treat as HARNESS_COMPLETE
-                        self._send_telegram_result(
-                            chat_id,
-                            f"✅ Harness loop complete! All {total} tasks finished. (Marker was missing but tasks.json confirms completion.)",
-                            bot_token,
-                        )
-                    elif done > 0 or harness_progress.get("in_progress", 0) == 0:
-                        # Tasks remain — auto-chain even without marker
-                        logger.warning(
-                            "No harness marker but tasks.json shows %d/%d done. Auto-chaining.",
-                            done, total,
-                        )
-                        self._send_telegram_result(
-                            chat_id,
-                            f"📊 Batch completed (no marker). tasks.json: {done}/{total} done. Auto-chaining...",
-                            bot_token,
-                        )
-                        if chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
-                            time.sleep(HARNESS_CHAIN_DELAY)
-                            chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
-                            chain_result = self.send_background(
-                                chat_id, chain_message, bot_token,
-                                bot_id=bot_id, chain_depth=chain_depth + 1,
-                                project_id=project_id,
-                            )
-                            if chain_result.get("status") != "started":
-                                self._send_telegram_result(
-                                    chat_id,
-                                    f"⚠️ Auto-chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
-                                    bot_token,
-                                )
-                    else:
-                        # No progress — might be genuinely stuck
-                        self._send_telegram_result(
-                            chat_id,
-                            f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
-                            bot_token,
-                        )
-                else:
-                    # Not a harness session — send full result normally
+                try:
+                    result = self.send(bg_session_key, message, bot_id=bot_id)
+                    task_info["result"] = result[:500] if result else ""
+                except Exception as e:
+                    result = f"[ERROR] Background task failed: {e}"
+                    task_info["status"] = "failed"
+                    task_info["result"] = result[:500]
                     self._send_telegram_result(chat_id, result, bot_token)
-            elif marker["type"] == "batch_done":
-                phase = marker["phase"]
-                done = marker["done"]
-                total = marker["total"]
-                # Keep status as "running" during chain window to prevent
-                # concurrent overwrites. Will be set to "completed" after
-                # the chain call succeeds (or fails).
-                task_info["status"] = "chaining"
-                # Send short progress to Telegram
-                self._send_telegram_result(
-                    chat_id,
-                    f"📊 Batch done — {phase}: {done}/{total} tasks complete. Chaining next batch (depth {chain_depth + 1})...",
-                    bot_token,
-                )
-                # Check chain depth limit
-                if chain_depth + 1 >= MAX_HARNESS_CHAIN_DEPTH:
-                    self._send_telegram_result(
-                        chat_id,
-                        f"⚠️ Harness chain depth limit reached ({MAX_HARNESS_CHAIN_DEPTH}). Stopping auto-chain.",
-                        bot_token,
-                    )
                     return
-                # Delay then chain next batch
-                time.sleep(HARNESS_CHAIN_DELAY)
-                chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
-                chain_result = self.send_background(
-                    chat_id, chain_message, bot_token,
-                    bot_id=bot_id, chain_depth=chain_depth + 1,
-                    project_id=project_id,
-                )
-                # Mark this batch as completed now that chain is dispatched (or failed)
-                task_info["status"] = "completed"
-                if chain_result.get("status") != "started":
-                    reason = chain_result.get("reason", "unknown")
-                    logger.error(
-                        "Harness chain dispatch FAILED for chat_id=%s depth=%d: %s",
-                        chat_id, chain_depth + 1, chain_result,
-                    )
+
+                # Check for harness batch-chaining markers
+                marker = self._parse_harness_marker(result)
+
+                if marker is None:
+                    # No marker — check if this is a harness session that should auto-chain
+                    task_info["status"] = "completed"
+
+                    cwd = task_info.get("cwd")
+                    harness_progress = self._read_harness_progress(cwd) if cwd else None
+
+                    if harness_progress and harness_progress.get("total", 0) > 0:
+                        done = harness_progress.get("done", 0)
+                        total = harness_progress.get("total", 0)
+
+                        if done >= total:
+                            # All done — treat as HARNESS_COMPLETE
+                            self._send_telegram_result(
+                                chat_id,
+                                f"✅ Harness loop complete! All {total} tasks finished. (Marker was missing but tasks.json confirms completion.)",
+                                bot_token,
+                            )
+                        elif done > 0 or harness_progress.get("in_progress", 0) == 0:
+                            # Tasks remain — auto-chain even without marker
+                            logger.warning(
+                                "No harness marker but tasks.json shows %d/%d done. Auto-chaining.",
+                                done, total,
+                            )
+                            self._send_telegram_result(
+                                chat_id,
+                                f"📊 Batch completed (no marker). tasks.json: {done}/{total} done. Auto-chaining...",
+                                bot_token,
+                            )
+                            if chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
+                                time.sleep(HARNESS_CHAIN_DELAY)
+                                chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
+                                chain_result = self.send_background(
+                                    chat_id, chain_message, bot_token,
+                                    bot_id=bot_id, chain_depth=chain_depth + 1,
+                                    project_id=project_id,
+                                )
+                                if chain_result.get("status") != "started":
+                                    self._send_telegram_result(
+                                        chat_id,
+                                        f"⚠️ Auto-chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
+                                        bot_token,
+                                    )
+                        else:
+                            # No progress — might be genuinely stuck
+                            self._send_telegram_result(
+                                chat_id,
+                                f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
+                                bot_token,
+                            )
+                    else:
+                        # Not a harness session — send full result normally
+                        self._send_telegram_result(chat_id, result, bot_token)
+                elif marker["type"] == "batch_done":
+                    phase = marker["phase"]
+                    done = marker["done"]
+                    total = marker["total"]
+                    # Keep status as "running" during chain window to prevent
+                    # concurrent overwrites. Will be set to "completed" after
+                    # the chain call succeeds (or fails).
+                    task_info["status"] = "chaining"
+                    # Send short progress to Telegram
                     self._send_telegram_result(
                         chat_id,
-                        f"⚠️ Harness chain dispatch failed: {reason}\n"
-                        f"Batch {done}/{total} done but next batch could not start.\n"
-                        f"Use /status to check, then resume manually.",
+                        f"📊 Batch done — {phase}: {done}/{total} tasks complete. Chaining next batch (depth {chain_depth + 1})...",
                         bot_token,
                     )
-            elif marker["type"] == "blocked":
-                task_info["status"] = "completed"
-                task_id = marker["task_id"]
-                reason = marker["reason"]
-                self._send_telegram_result(
-                    chat_id,
-                    f"🚫 Harness blocked on task {task_id}: {reason}\nSend a message to unblock.",
-                    bot_token,
-                )
-            elif marker["type"] == "complete":
-                task_info["status"] = "completed"
-                self._send_telegram_result(
-                    chat_id,
-                    "✅ Harness loop complete! All tasks finished.",
-                    bot_token,
-                )
+                    # Check chain depth limit
+                    if chain_depth + 1 >= MAX_HARNESS_CHAIN_DEPTH:
+                        task_info["status"] = "completed"
+                        self._send_telegram_result(
+                            chat_id,
+                            f"⚠️ Harness chain depth limit reached ({MAX_HARNESS_CHAIN_DEPTH}). Stopping auto-chain.",
+                            bot_token,
+                        )
+                        return
+                    # Delay then chain next batch
+                    time.sleep(HARNESS_CHAIN_DELAY)
+                    chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
+                    chain_result = self.send_background(
+                        chat_id, chain_message, bot_token,
+                        bot_id=bot_id, chain_depth=chain_depth + 1,
+                        project_id=project_id,
+                    )
+                    # Fix A2: Only mark completed if chain actually started
+                    if chain_result.get("status") == "started":
+                        task_info["status"] = "completed"
+                    else:
+                        task_info["status"] = "chain_failed"
+                        reason = chain_result.get("reason", "unknown")
+                        logger.error(
+                            "Harness chain dispatch FAILED for chat_id=%s depth=%d: %s",
+                            chat_id, chain_depth + 1, chain_result,
+                        )
+                        self._send_telegram_result(
+                            chat_id,
+                            f"⚠️ Harness chain dispatch failed: {reason}\n"
+                            f"Batch {done}/{total} done but next batch could not start.\n"
+                            f"Use /status to check, then resume manually.",
+                            bot_token,
+                        )
+                elif marker["type"] == "blocked":
+                    task_info["status"] = "completed"
+                    task_id = marker["task_id"]
+                    reason = marker["reason"]
+                    self._send_telegram_result(
+                        chat_id,
+                        f"🚫 Harness blocked on task {task_id}: {reason}\nSend a message to unblock.",
+                        bot_token,
+                    )
+                elif marker["type"] == "complete":
+                    task_info["status"] = "completed"
+                    self._send_telegram_result(
+                        chat_id,
+                        "✅ Harness loop complete! All tasks finished.",
+                        bot_token,
+                    )
+            except Exception as e:
+                # Fix A1: Catch ANY exception in the entire _run() body
+                logger.error("Background task crashed for chat_id=%s: %s", chat_id, e, exc_info=True)
+                task_info["status"] = "failed"
+                task_info["result"] = f"[CRASH] {e}"[:500]
+                try:
+                    self._send_telegram_result(chat_id, f"⚠️ Background task crashed: {e}", bot_token)
+                except Exception:
+                    pass
+            finally:
+                # Fix A1: Ensure status is ALWAYS terminal
+                if task_info["status"] in ("running", "chaining"):
+                    logger.warning(
+                        "Background task for chat_id=%s ended with non-terminal status '%s', forcing to 'failed'",
+                        chat_id, task_info["status"],
+                    )
+                    task_info["status"] = "failed"
 
         thread = threading.Thread(target=_run, daemon=True)
         task_info["thread"] = thread
