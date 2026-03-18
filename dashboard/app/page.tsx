@@ -197,7 +197,7 @@ export default function Dashboard() {
 
   const { system: sys, claude_usage: claude, cron_jobs: jobs, memory: mem, chat, db_health: dbh, harness } = data;
   const lastPush = data._last_push;
-  const isOnline = lastPush ? Date.now() - new Date(lastPush).getTime() < 600000 : false;
+  const isOnline = lastPush ? Date.now() - new Date(lastPush).getTime() < 120000 : false;
 
   const totalMessages = claude.total_messages || 0;
 
@@ -503,7 +503,7 @@ export default function Dashboard() {
       </div>
 
       <div className="text-center text-xs text-gray-700 mt-8">
-        mini-claude-bot &middot; Refreshes every 30s &middot; Heartbeat every 5min
+        mini-claude-bot &middot; Refreshes every 30s &middot; Heartbeat every 1min
       </div>
     </main>
   );
