@@ -1,5 +1,6 @@
-import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
+
+const GIST_ID = "293db39a0a328d56069caf8bdb279c51";
 
 export async function POST(req: NextRequest) {
   const secret = process.env.METRICS_SECRET;
@@ -12,16 +13,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
+  const ghToken = process.env.GITHUB_TOKEN;
+  if (!ghToken) {
+    return NextResponse.json({ ok: false, error: "missing GITHUB_TOKEN" }, { status: 500 });
+  }
+
   try {
     const metrics = await req.json();
     const timestamp = metrics.timestamp ?? new Date().toISOString();
     metrics._last_push = timestamp;
 
-    await put("metrics/current.json", JSON.stringify(metrics), {
-      access: "public",
-      addRandomSuffix: false,
-      contentType: "application/json",
+    const resp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${ghToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.github+json",
+      },
+      body: JSON.stringify({
+        files: {
+          "metrics.json": { content: JSON.stringify(metrics) },
+        },
+      }),
     });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      return NextResponse.json({ ok: false, error: `github: ${resp.status}`, detail: body }, { status: 502 });
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {
