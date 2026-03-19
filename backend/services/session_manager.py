@@ -1087,6 +1087,15 @@ class SessionManager:
                             )
                             if chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
                                 time.sleep(HARNESS_CHAIN_DELAY)
+                                # Guard: skip if bg_key was claimed by manual Resume (issue #6)
+                                current_entry = self._bg_tasks.get(bg_key)
+                                if current_entry is not task_info:
+                                    logger.info(
+                                        "Skipping no-marker auto-chain for chat_id=%s: "
+                                        "bg_key claimed by another task.",
+                                        chat_id,
+                                    )
+                                    return
                                 chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
                                 chain_result = self.send_background(
                                     chat_id, chain_message, bot_token,
@@ -1137,6 +1146,17 @@ class SessionManager:
                         return
                     # Delay then chain next batch
                     time.sleep(HARNESS_CHAIN_DELAY)
+                    # Guard: check if bg_key was overwritten by a manual
+                    # Resume while we were sleeping. If so, skip chaining —
+                    # the user's Resume already took over. See issue #6.
+                    current_entry = self._bg_tasks.get(bg_key)
+                    if current_entry is not task_info:
+                        logger.info(
+                            "Skipping auto-chain for chat_id=%s depth=%d: "
+                            "bg_key was claimed by another task (manual Resume).",
+                            chat_id, chain_depth + 1,
+                        )
+                        return
                     chain_message = "Resume the harness-loop. Continue the Execute Loop — pick up the next batch of ready tasks."
                     chain_result = self.send_background(
                         chat_id, chain_message, bot_token,
