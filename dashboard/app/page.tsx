@@ -240,13 +240,13 @@ export default function Dashboard() {
                 <ProgressBar value={sys.memory_used_gb} max={sys.memory_total_gb} color={c.bar} />
               </div>
             ); })()}
-            {(() => { const c = thresholdColor(sys.disk_total_gb > 0 ? (sys.disk_used_gb / sys.disk_total_gb) * 100 : 0, "bg-emerald-500", "text-emerald-400"); return (
+            {(() => { const diskUsed = sys.disk_total_gb - sys.disk_free_gb; const diskPct = sys.disk_total_gb > 0 ? (diskUsed / sys.disk_total_gb) * 100 : 0; const c = thresholdColor(diskPct, "bg-emerald-500", "text-emerald-400"); return (
             <div>
               <div className="flex justify-between text-sm mb-1">
                 <span>Disk</span>
-                <span className={c.text}>{sys.disk_used_gb}G / {sys.disk_total_gb}G</span>
+                <span className={c.text}>{diskUsed}G / {sys.disk_total_gb}G ({sys.disk_free_gb}G free)</span>
               </div>
-              <ProgressBar value={sys.disk_used_gb} max={sys.disk_total_gb} color={c.bar} />
+              <ProgressBar value={diskUsed} max={sys.disk_total_gb} color={c.bar} />
             </div>
             ); })()}
             <div className="flex justify-between text-xs text-gray-500 pt-1">
@@ -273,17 +273,19 @@ export default function Dashboard() {
                 <div className="text-xs text-gray-500">API Calls</div>
               </div>
             </div>
+            {(() => { const ctxMax = claude.context_max || 0; const ctxAvg = claude.context_avg || 0; const ctxLimit = 1000000; const peakPct = ctxLimit > 0 ? (ctxMax / ctxLimit) * 100 : 0; const c = thresholdColor(peakPct, "bg-blue-500", "text-blue-400"); return (
             <div className="bg-gray-800 rounded-lg p-3">
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-gray-400">Context Window</span>
-                <span className="text-gray-500">max 200k</span>
+                <span className="text-gray-400">Context Window (Peak)</span>
+                <span className={`${c.text}`}>{(peakPct).toFixed(0)}% of 1M</span>
               </div>
-              <ProgressBar value={claude.context_max || 0} max={200000} color="bg-blue-500" />
+              <ProgressBar value={ctxMax} max={ctxLimit} color={c.bar} />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>Avg: {fmt(claude.context_avg || 0)}</span>
-                <span>Peak: {fmt(claude.context_max || 0)}</span>
+                <span>Avg: {fmt(ctxAvg)} ({(ctxAvg / ctxLimit * 100).toFixed(0)}%)</span>
+                <span>Peak: {fmt(ctxMax)}</span>
               </div>
             </div>
+            ); })()}
             {claude.daily_activity.length > 0 && (() => {
               const days = claude.daily_activity.slice(-7).map((d) => ({
                 date: d.date.slice(5).replace("-", "/"),
