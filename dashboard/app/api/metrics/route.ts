@@ -4,20 +4,29 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const GIST_ID = "293db39a0a328d56069caf8bdb279c51";
-const RAW_URL = `https://gist.githubusercontent.com/spacelobster88/${GIST_ID}/raw/metrics.json`;
 
 export async function GET() {
   try {
-    const resp = await fetch(RAW_URL, {
+    // Use GitHub API (not raw URL) to avoid CDN caching
+    const resp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       cache: "no-store",
-      headers: { Accept: "application/json" },
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "mini-claude-bot-dashboard",
+      },
     });
 
     if (!resp.ok) {
       return NextResponse.json({ error: "gist fetch failed", status: resp.status }, { status: 502 });
     }
 
-    const payload = await resp.json();
+    const gist = await resp.json();
+    const file = gist.files?.["metrics.json"];
+    if (!file?.content) {
+      return NextResponse.json({ error: "no metrics data in gist" }, { status: 404 });
+    }
+
+    const payload = JSON.parse(file.content);
     return NextResponse.json(payload, {
       headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
     });
