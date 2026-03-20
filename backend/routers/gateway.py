@@ -238,10 +238,10 @@ def gateway_harness_status(chat_id: str, bot_id: str = Query(default="default"))
 
 
 @router.get("/background-status/{chat_id}")
-def gateway_background_status(chat_id: str, bot_id: str = Query(default="default")):
+def gateway_background_status(chat_id: str, bot_id: str = Query(default="default"), project_id: str = Query(default="")):
     """Get the status of a background task for the given chat_id."""
     manager = get_session_manager()
-    return manager.get_background_status(chat_id, bot_id=bot_id)
+    return manager.get_background_status(chat_id, bot_id=bot_id, project_id=project_id)
 
 
 @router.post("/cleanup/{chat_id}")

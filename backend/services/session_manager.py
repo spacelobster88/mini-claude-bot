@@ -1369,12 +1369,25 @@ class SessionManager:
             return {"bg_status": "idle", "elapsed_seconds": 0, "chain_depth": 0, "cwd": None, "harness": None}
         return jobs[0]
 
-    def get_background_status(self, chat_id: str, bot_id: str = "default") -> dict:
-        """Return the current background task info for this chat_id."""
-        bg_key = self._session_key(bot_id, chat_id)
-        task = self._bg_tasks.get(bg_key)
-        if task is None:
-            return {"status": "idle"}
+    def get_background_status(self, chat_id: str, bot_id: str = "default", project_id: str = "") -> dict:
+        """Return the current background task info for this chat_id.
+
+        If project_id is provided, look up that exact task.
+        Otherwise, find all tasks for this chat and return the most recent.
+        """
+        if project_id:
+            # Exact lookup when project_id is known
+            bg_key = self._bg_task_key(bot_id, chat_id, project_id)
+            task = self._bg_tasks.get(bg_key)
+            if task is None:
+                return {"status": "idle"}
+        else:
+            # Prefix search across all project_ids for this chat
+            tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
+            if not tasks:
+                return {"status": "idle"}
+            # Return the most recently started task
+            task = max(tasks.values(), key=lambda t: t["started_at"])
 
         now = time.time()
         elapsed = int(now - task["started_at"])
