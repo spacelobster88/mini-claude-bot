@@ -272,3 +272,87 @@ def test_recover_stuck_sessions(manager):
 
     assert session.busy is False
     assert session.busy_since == 0.0
+
+
+# ── get_background_status ────────────────────────────────────────
+
+def test_bg_status_idle_when_no_tasks(manager):
+    """Returns idle when no background tasks exist."""
+    result = manager.get_background_status("chat1")
+    assert result == {"status": "idle"}
+
+
+def test_bg_status_finds_task_with_project_id(manager):
+    """Finds a running task stored with a 3-part key (bot_id:chat_id:project_id)."""
+    bg_key = manager._bg_task_key("default", "chat1", "abc123")
+    manager._bg_tasks[bg_key] = {
+        "status": "running",
+        "message": "test message",
+        "started_at": time.time(),
+        "result": None,
+        "chain_depth": 0,
+        "project_id": "abc123",
+        "cwd": "/tmp/test",
+        "thread": None,
+    }
+    result = manager.get_background_status("chat1")
+    assert result["status"] == "running"
+    assert result["message"] == "test message"
+
+
+def test_bg_status_exact_lookup_with_project_id(manager):
+    """When project_id is given, does exact lookup instead of prefix search."""
+    # Insert two tasks for the same chat
+    for pid in ("proj1", "proj2"):
+        bg_key = manager._bg_task_key("default", "chat1", pid)
+        manager._bg_tasks[bg_key] = {
+            "status": "running" if pid == "proj1" else "completed",
+            "message": f"msg-{pid}",
+            "started_at": time.time(),
+            "result": None if pid == "proj1" else "done",
+            "chain_depth": 0,
+            "project_id": pid,
+            "cwd": "/tmp/test",
+            "thread": None,
+        }
+
+    # Exact lookup for proj2 should return completed, not proj1
+    result = manager.get_background_status("chat1", project_id="proj2")
+    assert result["status"] == "completed"
+
+
+def test_bg_status_returns_most_recent_without_project_id(manager):
+    """Without project_id, returns the most recently started task."""
+    now = time.time()
+    for pid, offset in (("old", -100), ("new", -10)):
+        bg_key = manager._bg_task_key("default", "chat1", pid)
+        manager._bg_tasks[bg_key] = {
+            "status": "running",
+            "message": f"msg-{pid}",
+            "started_at": now + offset,
+            "result": None,
+            "chain_depth": 0,
+            "project_id": pid,
+            "cwd": "/tmp/test",
+            "thread": None,
+        }
+
+    result = manager.get_background_status("chat1")
+    assert result["message"] == "msg-new"
+
+
+def test_bg_status_idle_for_nonexistent_project_id(manager):
+    """Returns idle when the specified project_id doesn't exist."""
+    bg_key = manager._bg_task_key("default", "chat1", "exists")
+    manager._bg_tasks[bg_key] = {
+        "status": "running",
+        "message": "test",
+        "started_at": time.time(),
+        "result": None,
+        "chain_depth": 0,
+        "project_id": "exists",
+        "cwd": "/tmp/test",
+        "thread": None,
+    }
+    result = manager.get_background_status("chat1", project_id="doesnt_exist")
+    assert result == {"status": "idle"}

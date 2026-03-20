@@ -86,7 +86,13 @@ def run_migrations(db: sqlite3.Connection) -> None:
         if version in applied:
             continue
         if sql.strip():
-            db.executescript(sql)
+            try:
+                db.executescript(sql)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    logger.info("Migration v%d: column already exists, skipping (%s)", version, e)
+                else:
+                    raise
         db.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
         db.commit()
         logger.info("Applied migration v%d: %s", version, description)
