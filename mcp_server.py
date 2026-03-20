@@ -350,14 +350,18 @@ def send_background_message(chat_id: str, message: str, bot_token: str, bot_id: 
 
 
 @mcp.tool()
-def get_background_status(chat_id: str, bot_id: str = "default") -> dict:
+def get_background_status(chat_id: str, bot_id: str = "default", project_id: str = "") -> dict:
     """Get the status of a background task for a chat.
 
     Args:
         chat_id: The Telegram chat ID to check
         bot_id: Bot identifier for multi-tenant isolation (default: 'default')
+        project_id: Optional project ID for exact lookup. If omitted, returns the most recent task.
     """
-    return _get(f"/gateway/background-status/{chat_id}", params={"bot_id": bot_id})
+    params = {"bot_id": bot_id}
+    if project_id:
+        params["project_id"] = project_id
+    return _get(f"/gateway/background-status/{chat_id}", params=params)
 
 
 if __name__ == "__main__":
