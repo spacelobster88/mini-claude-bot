@@ -63,13 +63,26 @@ def collect() -> dict:
     if load_m:
         metrics["load_avg"] = [float(load_m[i]) for i in range(1, 4)]
 
-    # Disk
-    df_out = _run(["df", "-h", "/"])
-    df_line = df_out.strip().split("\n")[-1].split()
-    metrics["disk_total_gb"] = _parse_size_gb(df_line[1])
-    metrics["disk_used_gb"] = _parse_size_gb(df_line[2])
-    metrics["disk_free_gb"] = _parse_size_gb(df_line[3])
-    metrics["disk_used_percent"] = int(df_line[4].rstrip("%"))
+    # Disk – use diskutil for accurate APFS container-level usage
+    # (df -h shows per-volume stats which are misleading on APFS)
+    apfs_out = _run(["diskutil", "apfs", "list"])
+    cap_m = re.search(r"Size \(Capacity Ceiling\):\s+([\d]+) B", apfs_out)
+    used_m = re.search(r"Capacity In Use By Volumes:\s+([\d]+) B", apfs_out)
+    free_m = re.search(r"Capacity Not Allocated:\s+([\d]+) B", apfs_out)
+    if cap_m and used_m and free_m:
+        metrics["disk_total_gb"] = round(int(cap_m[1]) / (1024**3), 1)
+        metrics["disk_used_gb"] = round(int(used_m[1]) / (1024**3), 1)
+        metrics["disk_free_gb"] = round(int(free_m[1]) / (1024**3), 1)
+        total = int(cap_m[1])
+        metrics["disk_used_percent"] = round(int(used_m[1]) / total * 100) if total else 0
+    else:
+        # Fallback to df if diskutil parsing fails
+        df_out = _run(["df", "-h", "/"])
+        df_line = df_out.strip().split("\n")[-1].split()
+        metrics["disk_total_gb"] = _parse_size_gb(df_line[1])
+        metrics["disk_used_gb"] = _parse_size_gb(df_line[2])
+        metrics["disk_free_gb"] = _parse_size_gb(df_line[3])
+        metrics["disk_used_percent"] = int(df_line[4].rstrip("%"))
 
     # Uptime
     uptime_out = _run(["uptime"])
