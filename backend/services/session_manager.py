@@ -1371,10 +1371,13 @@ class SessionManager:
 
     def get_background_status(self, chat_id: str, bot_id: str = "default") -> dict:
         """Return the current background task info for this chat_id."""
-        bg_key = self._session_key(bot_id, chat_id)
-        task = self._bg_tasks.get(bg_key)
-        if task is None:
+        # Use prefix search to find tasks with any project_id (key = bot_id:chat_id:project_id)
+        tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
+        if not tasks:
             return {"status": "idle"}
+
+        # Return the most recently started task (or the only one)
+        task = max(tasks.values(), key=lambda t: t["started_at"])
 
         now = time.time()
         elapsed = int(now - task["started_at"])
