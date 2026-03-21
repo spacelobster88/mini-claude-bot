@@ -356,3 +356,36 @@ def test_bg_status_idle_for_nonexistent_project_id(manager):
     }
     result = manager.get_background_status("chat1", project_id="doesnt_exist")
     assert result == {"status": "idle"}
+
+
+# ── nirmana_mode fields ──────────────────────────────────────────
+
+def test_nirmana_mode_defaults():
+    """GatewaySession defaults nirmana_mode=False, nirmana_activated_at=0.0."""
+    session = GatewaySession(chat_id="test", cwd="/tmp/test")
+    assert session.nirmana_mode is False
+    assert session.nirmana_activated_at == 0.0
+
+
+def test_nirmana_mode_can_be_set():
+    """nirmana_mode can be set to True with a timestamp."""
+    session = GatewaySession(chat_id="test", cwd="/tmp/test", nirmana_mode=True, nirmana_activated_at=1234567890.0)
+    assert session.nirmana_mode is True
+    assert session.nirmana_activated_at == 1234567890.0
+
+
+def test_nirmana_mode_persist_roundtrip(manager):
+    """nirmana_mode and nirmana_activated_at survive save/load round-trip."""
+    session = manager._get_or_create("nirmana_chat")
+    session.nirmana_mode = True
+    session.nirmana_activated_at = 1700000000.0
+    manager._persist_session(session)
+
+    # Clear in-memory sessions and reload from DB
+    manager._sessions.clear()
+    manager._load_persisted_sessions()
+
+    key = manager._session_key("default", "nirmana_chat")
+    restored = manager._sessions[key]
+    assert restored.nirmana_mode is True
+    assert restored.nirmana_activated_at == 1700000000.0

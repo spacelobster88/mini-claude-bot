@@ -99,6 +99,8 @@ class GatewaySession:
     busy: bool = False
     busy_since: float = 0.0
     last_active: float = field(default_factory=time.time)
+    nirmana_mode: bool = False
+    nirmana_activated_at: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
     _proc: subprocess.Popen | None = field(default=None, repr=False)
     _ready: threading.Event = field(default_factory=lambda: _make_set_event())
@@ -156,6 +158,8 @@ class SessionManager:
                         first_done=bool(row["first_done"]),
                         busy=False,  # always reset on startup
                         last_active=row["last_active"],
+                        nirmana_mode=bool(row.get("nirmana_mode", 0)),
+                        nirmana_activated_at=float(row.get("nirmana_activated_at", 0) or 0),
                     )
                     key = self._session_key(bot_id, row["chat_id"])
                     self._sessions[key] = session
@@ -173,10 +177,12 @@ class SessionManager:
             with self._get_write_lock():
                 db.execute(
                     """INSERT OR REPLACE INTO gateway_sessions
-                       (chat_id, bot_id, cwd, first_done, busy, last_active)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (chat_id, bot_id, cwd, first_done, busy, last_active,
+                        nirmana_mode, nirmana_activated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (session.chat_id, session.bot_id, session.cwd,
-                     int(session.first_done), int(session.busy), session.last_active),
+                     int(session.first_done), int(session.busy), session.last_active,
+                     int(session.nirmana_mode), session.nirmana_activated_at),
                 )
                 db.commit()
         except Exception as e:

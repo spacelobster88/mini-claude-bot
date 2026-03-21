@@ -65,9 +65,10 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE chat_messages ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'default';
         CREATE INDEX IF NOT EXISTS idx_chat_bot_id ON chat_messages(bot_id);
     """),
-    (7, "add user_id and username to chat_messages for per-user attribution", """
-        ALTER TABLE chat_messages ADD COLUMN user_id TEXT;
-        ALTER TABLE chat_messages ADD COLUMN username TEXT;
+    (7, "add user_id and username to chat_messages for per-user attribution", ""),  # columns now in CREATE TABLE; old DBs already migrated
+    (8, "add nirmana_mode and nirmana_activated_at to gateway_sessions", """
+        ALTER TABLE gateway_sessions ADD COLUMN nirmana_mode INTEGER DEFAULT 0;
+        ALTER TABLE gateway_sessions ADD COLUMN nirmana_activated_at REAL DEFAULT 0;
     """),
 ]
 
