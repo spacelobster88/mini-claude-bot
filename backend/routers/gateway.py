@@ -9,6 +9,8 @@ import json
 import logging
 import threading
 
+from typing import Literal
+
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -258,4 +260,40 @@ def gateway_cleanup(chat_id: str, request: Request, bot_id: str = Query(default=
     return result
 
 
+# ── Nirmana (Away/Back) ─────────────────────────────────────────
+
+
+class NirmanaRequest(BaseModel):
+    chat_id: str
+    bot_id: str = "default"
+    action: Literal["away", "back"]
+
+
+class NirmanaResponse(BaseModel):
+    status: str
+    message: str | None = None
+    briefing: str | None = None
+
+
+class NirmanaStateResponse(BaseModel):
+    nirmana_mode: bool
+    nirmana_activated_at: float
+    away_duration_seconds: float | None
+
+
+@router.post("/nirmana")
+async def gateway_nirmana(req: NirmanaRequest) -> NirmanaResponse:
+    """Toggle nirmana (away/back) mode for a session."""
+    manager = get_session_manager()
+    activate = req.action == "away"
+    result = await manager.set_nirmana_mode(req.chat_id, req.bot_id, activate=activate)
+    return NirmanaResponse(**result)
+
+
+@router.get("/nirmana/{chat_id}")
+def gateway_nirmana_state(chat_id: str, bot_id: str = Query(default="default")) -> NirmanaStateResponse:
+    """Query current nirmana state for a chat."""
+    manager = get_session_manager()
+    state = manager.get_nirmana_state(chat_id, bot_id=bot_id)
+    return NirmanaStateResponse(**state)
 

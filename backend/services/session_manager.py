@@ -443,6 +443,18 @@ class SessionManager:
 
         context_parts = []
 
+        # Nirmana persona — injected at top for highest priority
+        if session.nirmana_mode:
+            persona_path = Path(os.path.expanduser("~/eddie-nirmana/PERSONA.md"))
+            if persona_path.exists():
+                try:
+                    content = persona_path.read_text()
+                    context_parts.append(f"[Nirmana Persona]:\n{content}")
+                except Exception as e:
+                    logger.warning("Could not read Nirmana persona file: %s", e)
+            else:
+                logger.warning("Nirmana mode active but PERSONA.md not found at %s", persona_path)
+
         # Global memory — shared across all sessions/channels
         global_memory_path = Path(os.path.expanduser("~/.mini-claude-bot/global-memory.md"))
         if global_memory_path.exists():
@@ -1559,6 +1571,104 @@ class SessionManager:
                 }
                 for s in sessions
             ]
+
+    async def set_nirmana_mode(self, chat_id: str, bot_id: str, activate: bool) -> dict:
+        """Toggle nirmana (away) mode for a session.
+
+        activate=True  → set nirmana_mode, write state snapshot
+        activate=False → clear nirmana_mode, return briefing of missed messages
+        """
+        session = self._get_or_create(chat_id, bot_id=bot_id)
+
+        if activate:
+            session.nirmana_mode = True
+            session.nirmana_activated_at = time.time()
+            self._persist_session(session)
+            self._write_nirmana_snapshot(session)
+            return {"status": "ok", "message": "Nirmana activated"}
+        else:
+            # Deactivate (back)
+            if not session.nirmana_mode:
+                return {"status": "ok", "message": "Not in Nirmana mode", "briefing": ""}
+
+            # Gather messages since activation
+            briefing = self._generate_nirmana_briefing(session)
+
+            session.nirmana_mode = False
+            session.nirmana_activated_at = 0.0
+            self._persist_session(session)
+            return {"status": "ok", "briefing": briefing}
+
+    def get_nirmana_state(self, chat_id: str, bot_id: str = "default") -> dict:
+        """Return current nirmana state for a session."""
+        key = self._session_key(bot_id, chat_id)
+        session = self._sessions.get(key)
+        if session is None or not session.nirmana_mode:
+            activated_at = session.nirmana_activated_at if session else 0.0
+            return {
+                "nirmana_mode": False,
+                "nirmana_activated_at": activated_at,
+                "away_duration_seconds": None,
+            }
+        now = time.time()
+        return {
+            "nirmana_mode": True,
+            "nirmana_activated_at": session.nirmana_activated_at,
+            "away_duration_seconds": round(now - session.nirmana_activated_at, 1),
+        }
+
+    def _write_nirmana_snapshot(self, session: GatewaySession) -> None:
+        """Write state snapshot to ~/eddie-nirmana/state/session-{timestamp}.md."""
+        state_dir = Path.home() / "eddie-nirmana" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        snapshot_path = state_dir / f"session-{ts}.md"
+
+        lines = [
+            f"# Nirmana State Snapshot",
+            f"",
+            f"- **Timestamp**: {datetime.now(timezone.utc).isoformat()}",
+            f"- **Chat ID**: {session.chat_id}",
+            f"- **Bot ID**: {session.bot_id}",
+            f"",
+            f"## Active Sessions",
+            f"",
+        ]
+        with self._global_lock:
+            for s in self._sessions.values():
+                status = "busy" if s.busy else "idle"
+                lines.append(f"- `{s.bot_id}:{s.chat_id}` — {status}, last active {int(time.time() - s.last_active)}s ago")
+
+        snapshot_path.write_text("\n".join(lines) + "\n")
+
+    def _generate_nirmana_briefing(self, session: GatewaySession) -> str:
+        """Generate a bullet-list briefing of messages received while away."""
+        session_id = f"gw-{session.bot_id}-{session.chat_id}"
+        try:
+            db = self._get_db()
+            rows = db.execute(
+                """SELECT role, content, created_at FROM chat_messages
+                   WHERE session_id = ? AND created_at > datetime(?, 'unixepoch')
+                   ORDER BY created_at ASC""",
+                (session_id, session.nirmana_activated_at),
+            ).fetchall()
+        except Exception as e:
+            logger.warning("Could not query messages for nirmana briefing: %s", e)
+            return "(Could not retrieve messages)"
+
+        if not rows:
+            return "No messages while you were away."
+
+        lines = [f"Messages while you were away ({len(rows)} total):"]
+        for row in rows:
+            role = row["role"]
+            content = row["content"]
+            # Truncate long messages
+            if len(content) > 200:
+                content = content[:200] + "..."
+            lines.append(f"- [{role}] {content}")
+        return "\n".join(lines)
 
     def start_cleanup_loop(self):
         self._running = True
