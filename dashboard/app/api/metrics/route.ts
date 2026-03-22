@@ -8,12 +8,17 @@ const GIST_ID = "293db39a0a328d56069caf8bdb279c51";
 export async function GET() {
   try {
     // Use GitHub API (not raw URL) to avoid CDN caching
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "mini-claude-bot-dashboard",
+    };
+    const ghToken = process.env.GITHUB_TOKEN;
+    if (ghToken) {
+      headers.Authorization = `Bearer ${ghToken}`;
+    }
     const resp = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
       cache: "no-store",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "mini-claude-bot-dashboard",
-      },
+      headers,
     });
 
     if (!resp.ok) {
