@@ -1,4 +1,5 @@
 """MCP server that proxies to the mini-claude-bot FastAPI backend."""
+import json
 import os
 
 import httpx
@@ -362,6 +363,82 @@ def get_background_status(chat_id: str, bot_id: str = "default", project_id: str
     if project_id:
         params["project_id"] = project_id
     return _get(f"/gateway/background-status/{chat_id}", params=params)
+
+
+# ── Meta Loop ─────────────────────────────────────────────────
+# Proxy to AROS Meta Loop service
+
+META_LOOP_URL = "http://localhost:8200"
+
+
+async def _meta_get(path: str, params: dict = None) -> dict:
+    """GET request to meta-loop service with graceful fallback."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{META_LOOP_URL}{path}", params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        return {"error": f"Meta-loop service unavailable: {str(e)}"}
+
+
+async def _meta_post(path: str, json_data: dict = None) -> dict:
+    """POST request to meta-loop service with graceful fallback."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{META_LOOP_URL}{path}", json=json_data)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        return {"error": f"Meta-loop service unavailable: {str(e)}"}
+
+
+@mcp.tool()
+async def meta_loop_status() -> str:
+    """Get the current status of the AROS Meta Loop including meta-goal scores, last cycle info, and cadence mode."""
+    result = await _meta_get("/api/meta-loop/status")
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def meta_loop_trigger(trigger_reason: str = "manual") -> str:
+    """Trigger a meta-loop cycle with the specified reason (e.g. 'manual', 'harness_complete', 'human_feedback')."""
+    result = await _meta_post("/api/meta-loop/trigger", {"trigger": trigger_reason})
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def meta_loop_signal(source: str, priority: str = "normal", payload: str = "{}") -> str:
+    """Inject a signal into the meta-loop hot queue. Priority: low, normal, high, urgent."""
+    try:
+        payload_dict = json.loads(payload) if isinstance(payload, str) else payload
+    except json.JSONDecodeError:
+        payload_dict = {"raw": payload}
+    result = await _meta_post("/api/meta-loop/signal", {
+        "source": source, "priority": priority, "payload": payload_dict
+    })
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def meta_loop_evolution_log(limit: int = 20) -> str:
+    """Get the meta-loop evolution log showing cycle history and policy changes."""
+    result = await _meta_get("/api/meta-loop/evolution-log", params={"limit": limit})
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def meta_loop_approve(change_id: str) -> str:
+    """Approve a pending HUMAN-REVIEW policy change by its change_id."""
+    result = await _meta_post(f"/api/meta-loop/approve/{change_id}")
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def meta_loop_pending_approvals() -> str:
+    """List all pending policy changes awaiting human review."""
+    result = await _meta_get("/api/meta-loop/pending-approvals")
+    return json.dumps(result, indent=2)
 
 
 if __name__ == "__main__":

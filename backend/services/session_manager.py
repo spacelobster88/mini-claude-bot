@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+import asyncio
 import httpx
+
+from backend.services.meta_loop_bridge import get_bridge
 
 # Harness batch-chaining constants
 HARNESS_BATCH_DONE_RE = re.compile(r'\[HARNESS_BATCH_DONE:([^:]+):(\d+)/(\d+)\]')
@@ -107,6 +110,7 @@ class GatewaySession:
 
 
 class SessionManager:
+
     def __init__(self):
         self._sessions: dict[str, GatewaySession] = {}
         self._bg_tasks: dict[str, dict] = {}
@@ -454,6 +458,14 @@ class SessionManager:
                     logger.warning("Could not read Nirmana persona file: %s", e)
             else:
                 logger.warning("Nirmana mode active but PERSONA.md not found at %s", persona_path)
+
+        # Meta-loop status injection
+        try:
+            meta_ctx = get_bridge().format_context_injection()
+            if meta_ctx:
+                context_parts.append(meta_ctx)
+        except Exception:
+            pass
 
         # Global memory — shared across all sessions/channels
         global_memory_path = Path(os.path.expanduser("~/.mini-claude-bot/global-memory.md"))
@@ -868,6 +880,13 @@ class SessionManager:
 
                 # Success
                 if returncode == 0:
+                    # Fire-and-forget: notify meta-loop of session end
+                    try:
+                        get_bridge().emit_event(bot_id, "session_end", str(chat_id), {
+                            "context_tokens": len(stdout) // 4 if stdout else 0,
+                        })
+                    except Exception:
+                        pass
                     return stdout if stdout else ""
 
                 # Exit -15 = SIGTERM (likely OOM kill by macOS)
@@ -1140,6 +1159,13 @@ class SessionManager:
                     phase = marker["phase"]
                     done = marker["done"]
                     total = marker["total"]
+                    # Fire-and-forget: notify meta-loop of batch completion
+                    try:
+                        get_bridge().emit_event(bot_id, "task_complete", str(chat_id), {
+                            "batch_info": "harness_batch_done",
+                        })
+                    except Exception:
+                        pass
                     # Mark completed BEFORE the chain delay — the batch IS
                     # finished. This prevents the race where send_background()
                     # sees the current task as still active (thread alive +
@@ -1208,6 +1234,15 @@ class SessionManager:
                     )
                 elif marker["type"] == "complete":
                     task_info["status"] = "completed"
+                    # Fire-and-forget: notify meta-loop of harness completion
+                    try:
+                        bridge = get_bridge()
+                        bridge.emit_event(bot_id, "task_complete", str(chat_id), {
+                            "batch_info": "harness_complete",
+                        })
+                        bridge.trigger_cycle("harness_complete")
+                    except Exception:
+                        pass
                     self._send_telegram_result(
                         chat_id,
                         "✅ Harness loop complete! All tasks finished.",
@@ -1585,6 +1620,11 @@ class SessionManager:
             session.nirmana_activated_at = time.time()
             self._persist_session(session)
             self._write_nirmana_snapshot(session)
+            # Switch meta-loop to aggressive cadence
+            try:
+                get_bridge().switch_cadence(True)
+            except Exception:
+                pass
             return {"status": "ok", "message": "Nirmana activated"}
         else:
             # Deactivate (back)
@@ -1597,6 +1637,11 @@ class SessionManager:
             session.nirmana_mode = False
             session.nirmana_activated_at = 0.0
             self._persist_session(session)
+            # Switch meta-loop back to balanced cadence
+            try:
+                get_bridge().switch_cadence(False)
+            except Exception:
+                pass
             return {"status": "ok", "briefing": briefing}
 
     def get_nirmana_state(self, chat_id: str, bot_id: str = "default") -> dict:
