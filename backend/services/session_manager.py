@@ -1087,7 +1087,15 @@ class SessionManager:
                     result = f"[ERROR] Background task failed: {e}"
                     task_info["status"] = "failed"
                     task_info["result"] = result[:500]
-                    self._send_telegram_result(chat_id, result, bot_token)
+                    try:
+                        get_bridge().emit_event(bot_id, "task_complete", f"bg-{chat_id}", {
+                            "status": "failed",
+                            "chat_id": str(chat_id),
+                        })
+                    except Exception as bridge_err:
+                        logger.debug("MetaLoop event emission failed (non-fatal): %s", bridge_err)
+                    if bot_token:
+                        self._send_telegram_result(chat_id, result, bot_token)
                     return
 
                 # Check for harness batch-chaining markers
@@ -1106,22 +1114,34 @@ class SessionManager:
 
                         if done >= total:
                             # All done — treat as HARNESS_COMPLETE
-                            self._send_telegram_result(
-                                chat_id,
-                                f"✅ Harness loop complete! All {total} tasks finished. (Marker was missing but tasks.json confirms completion.)",
-                                bot_token,
-                            )
+                            try:
+                                bridge = get_bridge()
+                                bridge.emit_event(bot_id, "task_complete", f"bg-{chat_id}", {
+                                    "status": "completed",
+                                    "chat_id": str(chat_id),
+                                    "batch_info": "harness_complete",
+                                })
+                                bridge.trigger_cycle("harness_complete")
+                            except Exception as bridge_err:
+                                logger.debug("MetaLoop event emission failed (non-fatal): %s", bridge_err)
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"✅ Harness loop complete! All {total} tasks finished. (Marker was missing but tasks.json confirms completion.)",
+                                    bot_token,
+                                )
                         elif done > 0 or harness_progress.get("in_progress", 0) == 0:
                             # Tasks remain — auto-chain even without marker
                             logger.warning(
                                 "No harness marker but tasks.json shows %d/%d done. Auto-chaining.",
                                 done, total,
                             )
-                            self._send_telegram_result(
-                                chat_id,
-                                f"📊 Batch completed (no marker). tasks.json: {done}/{total} done. Auto-chaining...",
-                                bot_token,
-                            )
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"📊 Batch completed (no marker). tasks.json: {done}/{total} done. Auto-chaining...",
+                                    bot_token,
+                                )
                             if chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
                                 time.sleep(HARNESS_CHAIN_DELAY)
                                 # Guard: skip if bg_key was claimed by manual Resume (issue #6)
@@ -1140,21 +1160,31 @@ class SessionManager:
                                     project_id=project_id,
                                 )
                                 if chain_result.get("status") != "started":
-                                    self._send_telegram_result(
-                                        chat_id,
-                                        f"⚠️ Auto-chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
-                                        bot_token,
-                                    )
+                                    if bot_token:
+                                        self._send_telegram_result(
+                                            chat_id,
+                                            f"⚠️ Auto-chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
+                                            bot_token,
+                                        )
                         else:
                             # No progress — might be genuinely stuck
-                            self._send_telegram_result(
-                                chat_id,
-                                f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
-                                bot_token,
-                            )
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
+                                    bot_token,
+                                )
                     else:
                         # Not a harness session — send full result normally
-                        self._send_telegram_result(chat_id, result, bot_token)
+                        try:
+                            get_bridge().emit_event(bot_id, "task_complete", f"bg-{chat_id}", {
+                                "status": "completed",
+                                "chat_id": str(chat_id),
+                            })
+                        except Exception as bridge_err:
+                            logger.debug("MetaLoop event emission failed (non-fatal): %s", bridge_err)
+                        if bot_token:
+                            self._send_telegram_result(chat_id, result, bot_token)
                 elif marker["type"] == "batch_done":
                     phase = marker["phase"]
                     done = marker["done"]
@@ -1174,19 +1204,21 @@ class SessionManager:
                     # path at line ~1061. See issue #5.
                     task_info["status"] = "completed"
                     # Send short progress to Telegram
-                    self._send_telegram_result(
-                        chat_id,
-                        f"📊 Batch done — {phase}: {done}/{total} tasks complete. Chaining next batch (depth {chain_depth + 1})...",
-                        bot_token,
-                    )
+                    if bot_token:
+                        self._send_telegram_result(
+                            chat_id,
+                            f"📊 Batch done — {phase}: {done}/{total} tasks complete. Chaining next batch (depth {chain_depth + 1})...",
+                            bot_token,
+                        )
                     # Check chain depth limit
                     if chain_depth + 1 >= MAX_HARNESS_CHAIN_DEPTH:
                         task_info["status"] = "completed"
-                        self._send_telegram_result(
-                            chat_id,
-                            f"⚠️ Harness chain depth limit reached ({MAX_HARNESS_CHAIN_DEPTH}). Stopping auto-chain.",
-                            bot_token,
-                        )
+                        if bot_token:
+                            self._send_telegram_result(
+                                chat_id,
+                                f"⚠️ Harness chain depth limit reached ({MAX_HARNESS_CHAIN_DEPTH}). Stopping auto-chain.",
+                                bot_token,
+                            )
                         return
                     # Delay then chain next batch
                     time.sleep(HARNESS_CHAIN_DELAY)
@@ -1216,22 +1248,24 @@ class SessionManager:
                             "Harness chain dispatch FAILED for chat_id=%s depth=%d: %s",
                             chat_id, chain_depth + 1, chain_result,
                         )
-                        self._send_telegram_result(
-                            chat_id,
-                            f"⚠️ Harness chain dispatch failed: {reason}\n"
-                            f"Batch {done}/{total} done but next batch could not start.\n"
-                            f"Use /status to check, then resume manually.",
-                            bot_token,
-                        )
+                        if bot_token:
+                            self._send_telegram_result(
+                                chat_id,
+                                f"⚠️ Harness chain dispatch failed: {reason}\n"
+                                f"Batch {done}/{total} done but next batch could not start.\n"
+                                f"Use /status to check, then resume manually.",
+                                bot_token,
+                            )
                 elif marker["type"] == "blocked":
                     task_info["status"] = "completed"
                     task_id = marker["task_id"]
                     reason = marker["reason"]
-                    self._send_telegram_result(
-                        chat_id,
-                        f"🚫 Harness blocked on task {task_id}: {reason}\nSend a message to unblock.",
-                        bot_token,
-                    )
+                    if bot_token:
+                        self._send_telegram_result(
+                            chat_id,
+                            f"🚫 Harness blocked on task {task_id}: {reason}\nSend a message to unblock.",
+                            bot_token,
+                        )
                 elif marker["type"] == "complete":
                     task_info["status"] = "completed"
                     # Fire-and-forget: notify meta-loop of harness completion
@@ -1243,20 +1277,29 @@ class SessionManager:
                         bridge.trigger_cycle("harness_complete")
                     except Exception:
                         pass
-                    self._send_telegram_result(
-                        chat_id,
-                        "✅ Harness loop complete! All tasks finished.",
-                        bot_token,
-                    )
+                    if bot_token:
+                        self._send_telegram_result(
+                            chat_id,
+                            "✅ Harness loop complete! All tasks finished.",
+                            bot_token,
+                        )
             except Exception as e:
                 # Fix A1: Catch ANY exception in the entire _run() body
                 logger.error("Background task crashed for chat_id=%s: %s", chat_id, e, exc_info=True)
                 task_info["status"] = "failed"
                 task_info["result"] = f"[CRASH] {e}"[:500]
                 try:
-                    self._send_telegram_result(chat_id, f"⚠️ Background task crashed: {e}", bot_token)
+                    get_bridge().emit_event(bot_id, "task_complete", f"bg-{chat_id}", {
+                        "status": "failed",
+                        "chat_id": str(chat_id),
+                    })
                 except Exception:
                     pass
+                if bot_token:
+                    try:
+                        self._send_telegram_result(chat_id, f"⚠️ Background task crashed: {e}", bot_token)
+                    except Exception:
+                        pass
             finally:
                 # Fix A1: Ensure status is ALWAYS terminal
                 if task_info["status"] == "running":
@@ -1265,6 +1308,13 @@ class SessionManager:
                         chat_id, task_info["status"],
                     )
                     task_info["status"] = "failed"
+                    try:
+                        get_bridge().emit_event(bot_id, "task_complete", f"bg-{chat_id}", {
+                            "status": "failed",
+                            "chat_id": str(chat_id),
+                        })
+                    except Exception:
+                        pass
 
         thread = threading.Thread(target=_run, daemon=True)
         task_info["thread"] = thread

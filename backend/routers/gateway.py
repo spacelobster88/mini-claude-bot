@@ -43,7 +43,7 @@ class StopRequest(BaseModel):
 class BackgroundSendRequest(BaseModel):
     chat_id: str
     message: str
-    bot_token: str
+    bot_token: str = ""
     bot_id: str = "default"
     project_id: str = ""
 
