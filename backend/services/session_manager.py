@@ -35,7 +35,8 @@ HARNESS_CHAIN_DELAY = 5
 logger = logging.getLogger(__name__)
 
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", os.path.expanduser("~/claude-gateway-sessions"))
-SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_TIMEOUT", "7200"))  # 2 hours
+SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_IDLE_TIMEOUT", os.getenv("GATEWAY_SESSION_TIMEOUT", "3600")))  # 1 hour default
+BG_SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_BG_SESSION_IDLE_TIMEOUT", "14400"))  # 4 hours for bg-* sessions
 HARNESS_SESSION_TIMEOUT = int(os.getenv("HARNESS_SESSION_TIMEOUT", "259200"))  # 3 days for harness projects
 HARNESS_ARCHIVE_DIR = os.path.expanduser("~/.claude-gateway-archives")
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "600"))  # 10 minutes for normal chat
@@ -1789,27 +1790,74 @@ class SessionManager:
             self._recover_stuck_sessions()
 
     def _cleanup_idle(self):
+        self._reap_idle_sessions()
+
+    def _reap_idle_sessions(self) -> list[dict]:
+        """Reap idle sessions following priority order from CLAUDE.md.
+
+        Priority: stale/idle interactive FIRST, then background sessions LAST.
+        Background sessions (bg-*) get a longer timeout.
+        Harness sessions get the longest timeout.
+
+        Returns list of reaped session info dicts.
+        """
         now = time.time()
-        removed_sessions = []
+        reaped_info = []
+
+        # Classify sessions into priority tiers
+        interactive_idle = []  # Priority 1: stale/idle interactive (close first)
+        background_idle = []   # Priority 3: background sessions (close last)
+
         with self._global_lock:
-            to_remove = []
             for key, session in self._sessions.items():
                 if session.busy:
                     continue
                 idle_duration = now - session.last_active
-                # Tiered retention: harness sessions get 3 days, regular sessions get 2 hours
+                is_bg = _is_background_session(session.chat_id)
                 has_harness = (Path(session.cwd) / ".harness").exists() if os.path.exists(session.cwd) else False
-                timeout = HARNESS_SESSION_TIMEOUT if has_harness else SESSION_IDLE_TIMEOUT
+
+                # Determine timeout based on session type
+                if has_harness:
+                    timeout = HARNESS_SESSION_TIMEOUT
+                elif is_bg:
+                    timeout = BG_SESSION_IDLE_TIMEOUT
+                else:
+                    timeout = SESSION_IDLE_TIMEOUT
+
                 if idle_duration > timeout:
-                    to_remove.append(key)
-            for key in to_remove:
-                removed_sessions.append(self._sessions.pop(key))
-                logger.info("Cleaned up idle session bot_id=%s chat_id=%s", removed_sessions[-1].bot_id, removed_sessions[-1].chat_id)
+                    entry = (key, session, idle_duration, timeout)
+                    if is_bg:
+                        background_idle.append(entry)
+                    else:
+                        interactive_idle.append(entry)
+
+            # Remove in priority order: interactive first, background last
+            removed_sessions = []
+            for entries in [interactive_idle, background_idle]:
+                for key, session, idle_duration, timeout in entries:
+                    removed_sessions.append(self._sessions.pop(key))
+                    idle_hours = idle_duration / 3600
+                    session_type = "background" if _is_background_session(session.chat_id) else "interactive"
+                    logger.info(
+                        "Auto-closed idle %s session %s:%s (idle %.1fh, timeout %ds)",
+                        session_type, session.bot_id, session.chat_id,
+                        idle_hours, timeout,
+                    )
+                    reaped_info.append({
+                        "chat_id": session.chat_id,
+                        "bot_id": session.bot_id,
+                        "type": session_type,
+                        "idle_seconds": int(idle_duration),
+                        "idle_hours": round(idle_hours, 1),
+                    })
+
         # Archive harness data, then clean up files and DB outside the lock
         for session in removed_sessions:
             self._archive_harness(session)
             self._cleanup_session_files(session)
             self._delete_persisted_session(session.chat_id, bot_id=session.bot_id)
+
+        return reaped_info
 
     def _recover_stuck_sessions(self):
         """Auto-recover sessions stuck in busy state beyond the timeout."""

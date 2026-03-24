@@ -246,6 +246,18 @@ def gateway_background_status(chat_id: str, bot_id: str = Query(default="default
     return manager.get_background_status(chat_id, bot_id=bot_id, project_id=project_id)
 
 
+@router.post("/sessions/reap")
+def gateway_reap_sessions(request: Request):
+    """Manually trigger idle session reaper. Returns list of reaped sessions."""
+    client_host = request.client.host if request.client else "unknown"
+    logging.getLogger("gateway.reap").info(
+        "Manual reap triggered from host=%s", client_host,
+    )
+    manager = get_session_manager()
+    reaped = manager._reap_idle_sessions()
+    return {"reaped": reaped, "count": len(reaped)}
+
+
 @router.post("/cleanup/{chat_id}")
 def gateway_cleanup(chat_id: str, request: Request, bot_id: str = Query(default="default")):
     """Clean up stale (completed/failed) background tasks for the given chat_id."""

@@ -259,6 +259,62 @@ def test_cleanup_skips_busy_sessions(manager):
     assert "default:busy_chat" in manager._sessions
 
 
+def test_reap_returns_info(manager):
+    """_reap_idle_sessions returns info about reaped sessions."""
+    session = manager._get_or_create("reap_test")
+    session.last_active = time.time() - 99999
+
+    with patch("backend.services.session_manager.SESSION_IDLE_TIMEOUT", 100):
+        reaped = manager._reap_idle_sessions()
+
+    assert len(reaped) == 1
+    assert reaped[0]["chat_id"] == "reap_test"
+    assert reaped[0]["type"] == "interactive"
+    assert reaped[0]["idle_seconds"] > 99000
+
+
+def test_reap_priority_interactive_before_background(manager):
+    """Interactive sessions are reaped before background sessions."""
+    # Create an interactive session and a background session, both idle
+    interactive = manager._get_or_create("interactive_chat")
+    interactive.last_active = time.time() - 99999
+
+    bg = manager._get_or_create("bg-task-123")
+    bg.last_active = time.time() - 99999
+
+    with patch("backend.services.session_manager.SESSION_IDLE_TIMEOUT", 100), \
+         patch("backend.services.session_manager.BG_SESSION_IDLE_TIMEOUT", 100):
+        reaped = manager._reap_idle_sessions()
+
+    assert len(reaped) == 2
+    # Interactive should be first in the list (higher priority to close)
+    assert reaped[0]["type"] == "interactive"
+    assert reaped[1]["type"] == "background"
+
+
+def test_bg_sessions_use_longer_timeout(manager):
+    """Background sessions use BG_SESSION_IDLE_TIMEOUT (longer than regular)."""
+    bg = manager._get_or_create("bg-task-456")
+    bg.last_active = time.time() - 5000  # idle 5000s
+
+    # Regular timeout is 3600, bg timeout is 14400
+    # Session idle 5000s should NOT be reaped with bg timeout of 14400
+    with patch("backend.services.session_manager.SESSION_IDLE_TIMEOUT", 3600), \
+         patch("backend.services.session_manager.BG_SESSION_IDLE_TIMEOUT", 14400):
+        reaped = manager._reap_idle_sessions()
+
+    assert len(reaped) == 0
+    assert "default:bg-task-456" in manager._sessions
+
+
+def test_reap_empty_when_no_idle(manager):
+    """No sessions reaped when all are recent."""
+    manager._get_or_create("fresh_chat")
+
+    reaped = manager._reap_idle_sessions()
+    assert len(reaped) == 0
+
+
 # ── Stuck recovery ───────────────────────────────────────────────
 
 def test_recover_stuck_sessions(manager):
