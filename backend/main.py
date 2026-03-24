@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,9 +9,13 @@ from backend.routers import chat, cron, gateway, memory, metrics
 from backend.services.scheduler import start_scheduler, shutdown_scheduler
 from backend.services.session_manager import get_session_manager, shutdown_session_manager
 
+_start_time: float = 0.0
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _start_time
+    _start_time = time.monotonic()
     get_db()  # initialize DB + tables
     start_scheduler()
     get_session_manager()  # initialize gateway session manager
@@ -33,6 +38,18 @@ app.include_router(cron.router)
 app.include_router(gateway.router)
 app.include_router(memory.router)
 app.include_router(metrics.router)
+
+
+@app.get("/health")
+def health_root():
+    """Root-level health endpoint for watchdog / LaunchAgent checks."""
+    sm = get_session_manager()
+    uptime = round(time.monotonic() - _start_time, 1)
+    return {
+        "status": "ok",
+        "uptime_seconds": uptime,
+        "active_sessions": len(sm._sessions),
+    }
 
 
 @app.get("/api/health")
