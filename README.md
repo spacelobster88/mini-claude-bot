@@ -267,4 +267,4 @@ python reports/scripts/generate_report.py --lang cn --preview   # send to cc onl
 
 ## License
 
-MIT
+Apache-2.0
