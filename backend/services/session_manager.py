@@ -951,6 +951,27 @@ class SessionManager:
             yield from self.send_streaming(fg_chat_id, message, bot_id=bot_id)
             return
 
+        # Check if session is already busy BEFORE waiting for a process slot.
+        # This avoids blocking for up to 5 minutes when the session can't accept
+        # work anyway (fixes spacelobster88/mini-claude-bot#4).
+        session = self._get_or_create(chat_id, bot_id=bot_id)
+
+        with session.lock:
+            if session.busy:
+                stuck_duration = time.time() - session.busy_since
+                if stuck_duration > BUSY_STUCK_TIMEOUT:
+                    logger.warning(
+                        "Session chat_id=%s stuck busy for %ds, force-resetting",
+                        chat_id, int(stuck_duration),
+                    )
+                    if session._proc and session._proc.poll() is None:
+                        self._kill_process(session._proc)
+                        session._proc = None
+                    session.busy = False
+                else:
+                    yield {"type": "error", "content": "Still processing the previous message, please wait.", "busy": True}
+                    return
+
         # Check concurrent process limit
         waited = 0
         while waited < QUEUE_WAIT_TIMEOUT:
@@ -968,27 +989,13 @@ class SessionManager:
             yield {"type": "error", "content": "Too many concurrent Claude processes. Please try again later."}
             return
 
-        session = self._get_or_create(chat_id, bot_id=bot_id)
-
         with session.lock:
             if session.busy:
-                # Auto-recover from stuck busy state
-                stuck_duration = time.time() - session.busy_since
-                if stuck_duration > BUSY_STUCK_TIMEOUT:
-                    logger.warning(
-                        "Session chat_id=%s stuck busy for %ds, force-resetting",
-                        chat_id, int(stuck_duration),
-                    )
-                    if session._proc and session._proc.poll() is None:
-                        self._kill_process(session._proc)
-                        session._proc = None
-                    session.busy = False
-                else:
-                    # Release process slot since we never started
-                    with self._process_count_lock:
-                        self._claude_process_count = max(0, self._claude_process_count - 1)
-                    yield {"type": "error", "content": "Still processing the previous message, please wait."}
-                    return
+                # Race: session became busy while we waited for a process slot
+                with self._process_count_lock:
+                    self._claude_process_count = max(0, self._claude_process_count - 1)
+                yield {"type": "error", "content": "Still processing the previous message, please wait.", "busy": True}
+                return
             session.busy = True
             session.busy_since = time.time()
             session._ready.clear()
