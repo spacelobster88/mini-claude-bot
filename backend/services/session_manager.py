@@ -1812,6 +1812,10 @@ class SessionManager:
             for key, session in self._sessions.items():
                 if session.busy:
                     continue
+                # Never reap Nirmana-mode sessions — Eddie is away and
+                # the session is intentionally idle until /back
+                if getattr(session, 'nirmana_mode', False):
+                    continue
                 idle_duration = now - session.last_active
                 is_bg = _is_background_session(session.chat_id)
                 has_harness = (Path(session.cwd) / ".harness").exists() if os.path.exists(session.cwd) else False
