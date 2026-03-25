@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.services.session_manager import GatewaySession, SessionManager
+from backend.services.session_manager import (
+    GatewaySession,
+    MAX_DECOMPOSITION_RETRIES,
+    SessionManager,
+)
 
 
 def _mock_popen(stdout="ok", stderr="", returncode=0, side_effect=None):
@@ -445,3 +449,55 @@ def test_nirmana_mode_persist_roundtrip(manager):
     restored = manager._sessions[key]
     assert restored.nirmana_mode is True
     assert restored.nirmana_activated_at == 1700000000.0
+
+
+# ── Issue #9: empty tasks detection on chain/resume ─────────────
+
+
+def test_read_harness_progress_empty_tasks(manager, tmp_session_dir):
+    """_read_harness_progress returns total=0 when tasks array is empty."""
+    import json
+
+    cwd = str(tmp_session_dir / "default" / "test_empty")
+    harness_dir = Path(cwd) / ".harness"
+    harness_dir.mkdir(parents=True)
+    tasks_file = harness_dir / "tasks.json"
+    tasks_file.write_text(json.dumps({
+        "metadata": {"project_name": "test-proj", "current_phase": "init"},
+        "tasks": [],
+    }))
+
+    progress = SessionManager._read_harness_progress(cwd)
+    assert progress is not None
+    assert progress["total"] == 0
+    assert progress["done"] == 0
+    assert progress["project_name"] == "test-proj"
+
+
+def test_read_harness_progress_with_tasks(manager, tmp_session_dir):
+    """_read_harness_progress returns correct counts for non-empty tasks."""
+    import json
+
+    cwd = str(tmp_session_dir / "default" / "test_with_tasks")
+    harness_dir = Path(cwd) / ".harness"
+    harness_dir.mkdir(parents=True)
+    tasks_file = harness_dir / "tasks.json"
+    tasks_file.write_text(json.dumps({
+        "metadata": {"project_name": "test-proj"},
+        "tasks": [
+            {"id": "1", "status": "done", "phase": "build"},
+            {"id": "2", "status": "pending", "phase": "build"},
+        ],
+    }))
+
+    progress = SessionManager._read_harness_progress(cwd)
+    assert progress is not None
+    assert progress["total"] == 2
+    assert progress["done"] == 1
+    assert progress["pending"] == 1
+
+
+def test_max_decomposition_retries_constant():
+    """MAX_DECOMPOSITION_RETRIES is a positive integer for circuit-breaker."""
+    assert isinstance(MAX_DECOMPOSITION_RETRIES, int)
+    assert MAX_DECOMPOSITION_RETRIES > 0

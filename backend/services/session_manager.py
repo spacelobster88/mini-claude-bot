@@ -30,6 +30,7 @@ HARNESS_BATCH_DONE_RE = re.compile(r'\[HARNESS_BATCH_DONE:([^:]+):(\d+)/(\d+)\]'
 HARNESS_BLOCKED_RE = re.compile(r'\[HARNESS_BLOCKED:([^:]+):(.+)\]')
 HARNESS_COMPLETE_MARKER = '[HARNESS_COMPLETE]'
 MAX_HARNESS_CHAIN_DEPTH = 100
+MAX_DECOMPOSITION_RETRIES = 3  # Circuit-breaker: max attempts to trigger decomposition before blocking
 HARNESS_CHAIN_DELAY = 5
 
 logger = logging.getLogger(__name__)
@@ -1184,6 +1185,72 @@ class SessionManager:
                                 self._send_telegram_result(
                                     chat_id,
                                     f"⚠️ Harness batch completed but no progress detected ({done}/{total}). Check /status.",
+                                    bot_token,
+                                )
+                    elif harness_progress is not None and harness_progress.get("total", 0) == 0:
+                        # Issue #9: tasks.json exists but tasks array is empty —
+                        # decomposition never ran. Trigger it instead of stalling.
+                        decomp_attempts = task_info.get("_decomp_retries", 0)
+                        if decomp_attempts >= MAX_DECOMPOSITION_RETRIES:
+                            logger.error(
+                                "Empty tasks after %d decomposition attempts for chat_id=%s. Blocking.",
+                                decomp_attempts, chat_id,
+                            )
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"⚠️ Harness tasks.json has 0 tasks after {decomp_attempts} "
+                                    f"decomposition attempts. [HARNESS_BLOCKED:init:decomposition failed after {decomp_attempts} retries]",
+                                    bot_token,
+                                )
+                        elif chain_depth + 1 < MAX_HARNESS_CHAIN_DEPTH:
+                            logger.warning(
+                                "tasks.json has 0 tasks for chat_id=%s (attempt %d). Chaining with decomposition message.",
+                                chat_id, decomp_attempts + 1,
+                            )
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"📋 tasks.json has 0 tasks — triggering task decomposition (attempt {decomp_attempts + 1}/{MAX_DECOMPOSITION_RETRIES})...",
+                                    bot_token,
+                                )
+                            time.sleep(HARNESS_CHAIN_DELAY)
+                            # Guard: skip if bg_key was claimed by manual Resume
+                            current_entry = self._bg_tasks.get(bg_key)
+                            if current_entry is not task_info:
+                                logger.info(
+                                    "Skipping decomposition chain for chat_id=%s: bg_key claimed by another task.",
+                                    chat_id,
+                                )
+                                return
+                            chain_message = (
+                                "The harness tasks.json has an empty tasks array — task decomposition has not been run yet. "
+                                "Run Task Decomposition now: read the project requirements and design docs, then populate "
+                                "tasks.json with the decomposed tasks. After decomposition, continue the Execute Loop."
+                            )
+                            chain_result = self.send_background(
+                                chat_id, chain_message, bot_token,
+                                bot_id=bot_id, chain_depth=chain_depth + 1,
+                                project_id=project_id,
+                            )
+                            if chain_result.get("status") == "started":
+                                # Track decomposition retry count on the NEW task
+                                new_bg_key = f"bg-{bot_id}:{chat_id}"
+                                new_task = self._bg_tasks.get(new_bg_key)
+                                if new_task:
+                                    new_task["_decomp_retries"] = decomp_attempts + 1
+                            else:
+                                if bot_token:
+                                    self._send_telegram_result(
+                                        chat_id,
+                                        f"⚠️ Decomposition chain failed: {chain_result.get('reason', 'unknown')}. Resume manually.",
+                                        bot_token,
+                                    )
+                        else:
+                            if bot_token:
+                                self._send_telegram_result(
+                                    chat_id,
+                                    f"⚠️ Harness chain depth limit reached with 0 tasks. Run decomposition manually.",
                                     bot_token,
                                 )
                     else:
