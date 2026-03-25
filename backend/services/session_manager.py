@@ -478,7 +478,7 @@ class SessionManager:
                 logger.debug("Could not read global memory: %s", e)
 
         try:
-            harness_dir = Path(session.cwd) / ".harness"
+            harness_dir = self._resolve_harness_dir(session.cwd)
             if harness_dir.exists():
                 for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
                     fp = harness_dir / name
@@ -515,7 +515,7 @@ class SessionManager:
 
         # Also inject TELEGRAM_BOT_MODE if .harness/ exists (covers resume scenarios
         # where user says "resume harness" without the exact "harness-loop" keyword)
-        harness_exists = (Path(session.cwd) / ".harness").exists()
+        harness_exists = self._resolve_harness_dir(session.cwd).exists()
         if harness_exists or any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
             context_parts.append(
                 "[TELEGRAM_BOT_MODE]\n"
@@ -1109,6 +1109,10 @@ class SessionManager:
                 # Check for harness batch-chaining markers
                 marker = self._parse_harness_marker(result)
 
+                # Detect project directory from Claude's response and save pointer
+                # Look for paths like /Users/.../Projects/foo/.harness/tasks.json
+                self._detect_and_save_project_dir(result, main_session.cwd)
+
                 if marker is None:
                     # No marker — check if this is a harness session that should auto-chain
                     task_info["status"] = "completed"
@@ -1391,9 +1395,62 @@ class SessionManager:
         return None
 
     @staticmethod
+    def _resolve_harness_dir(cwd: str) -> Path:
+        """Resolve the actual harness directory, following project pointer if present.
+
+        The gateway session CWD may contain a .harness_project_dir file that points
+        to the real project directory (where the harness loop creates .harness/).
+        If found and valid, use that. Otherwise fall back to the CWD itself.
+        """
+        cwd_path = Path(cwd)
+        pointer_file = cwd_path / ".harness_project_dir"
+        if pointer_file.exists():
+            try:
+                project_dir = pointer_file.read_text().strip()
+                harness_dir = Path(project_dir) / ".harness"
+                if harness_dir.exists() and (harness_dir / "tasks.json").exists():
+                    return harness_dir
+            except Exception:
+                pass
+        # Fall back to CWD's own .harness/
+        return cwd_path / ".harness"
+
+    # Regex to find project dir references in Claude output
+    _HARNESS_PATH_RE = re.compile(r'(/[^\s"\']+)/\.harness/tasks\.json')
+
+    @classmethod
+    def _detect_and_save_project_dir(cls, response: str, cwd: str) -> None:
+        """Detect actual project directory from Claude's response and save pointer.
+
+        When Claude reads/writes .harness/tasks.json in a project directory different
+        from the gateway session CWD, we extract that project dir and save a pointer
+        so future context injection reads from the right place.
+        """
+        if not response:
+            return
+        cwd_path = Path(cwd).resolve()
+        matches = cls._HARNESS_PATH_RE.findall(response)
+        for project_dir in matches:
+            project_path = Path(project_dir).resolve()
+            if project_path != cwd_path and (project_path / ".harness" / "tasks.json").exists():
+                cls._save_harness_project_dir(cwd, str(project_path))
+                return  # Save first valid match
+
+    @staticmethod
+    def _save_harness_project_dir(cwd: str, project_dir: str) -> None:
+        """Save the actual project directory as a pointer in the gateway session CWD."""
+        try:
+            pointer_file = Path(cwd) / ".harness_project_dir"
+            pointer_file.write_text(project_dir)
+            logger.info("Saved harness project dir pointer: %s -> %s", cwd, project_dir)
+        except Exception as e:
+            logger.debug("Failed to save harness project dir: %s", e)
+
+    @staticmethod
     def _read_harness_progress(cwd: str) -> dict | None:
         """Read .harness/tasks.json from a CWD and return structured progress."""
-        tasks_path = Path(cwd) / ".harness" / "tasks.json"
+        harness_dir = SessionManager._resolve_harness_dir(cwd)
+        tasks_path = harness_dir / "tasks.json"
         if not tasks_path.exists():
             return None
         try:
