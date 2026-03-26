@@ -319,6 +319,41 @@ def reset_gateway_session(chat_id: str, bot_id: str = "default") -> dict:
     return _request("POST", f"/gateway/sessions/{chat_id}/reset?bot_id={bot_id}")
 
 
+# ── Nirmana (Away/Back) ─────────────────────────────────────────
+
+
+@mcp.tool()
+def set_nirmana_mode(chat_id: str, action: str, bot_id: str = "default") -> dict:
+    """Toggle nirmana (away/back) mode for a gateway session.
+
+    When activated, injects Eddie-Nirmana persona into Claude context and
+    switches MetaLoop to aggressive cadence for autonomous operation.
+    When deactivated, returns a briefing of messages received while away.
+
+    Args:
+        chat_id: The Telegram chat ID
+        action: 'away' to activate Nirmana mode, 'back' to deactivate
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
+    """
+    return _post("/gateway/nirmana", json={
+        "chat_id": chat_id, "bot_id": bot_id, "action": action
+    })
+
+
+@mcp.tool()
+def get_nirmana_state(chat_id: str, bot_id: str = "default") -> dict:
+    """Get current nirmana mode state for a gateway session.
+
+    Returns whether nirmana mode is active, when it was activated,
+    and how long the user has been away.
+
+    Args:
+        chat_id: The Telegram chat ID
+        bot_id: Bot identifier for multi-tenant isolation (default: 'default')
+    """
+    return _get(f"/gateway/nirmana/{chat_id}", params={"bot_id": bot_id})
+
+
 @mcp.tool()
 async def send_gateway_message(chat_id: str, message: str, bot_id: str = "default") -> dict:
     """Send a message to a specific chat via the gateway.
