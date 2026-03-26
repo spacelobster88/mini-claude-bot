@@ -35,6 +35,87 @@ HARNESS_CHAIN_DELAY = 5
 
 logger = logging.getLogger(__name__)
 
+
+def convert_markdown_tables(text: str) -> str:
+    """Convert pipe-delimited markdown tables to <pre> blocks and HTML-escape all text.
+
+    - HTML-escapes &, <, > everywhere
+    - Detects consecutive lines starting with '|' as table blocks
+    - Removes separator rows (e.g. |---|---|)
+    - Pads cells for aligned columns inside <pre> tags
+    - Non-table text is returned HTML-escaped but otherwise unchanged
+    """
+    import html as _html
+
+    separator_re = re.compile(r'^\|[-:\s|]+\|$')
+
+    lines = text.split('\n')
+    result_parts: list[str] = []
+    i = 0
+    in_code_block = False
+
+    while i < len(lines):
+        # Track code fences: toggle when a line starts with ```
+        if lines[i].strip().startswith('```'):
+            in_code_block = not in_code_block
+            result_parts.append(_html.escape(lines[i]))
+            i += 1
+            continue
+
+        # Detect start of a table block (consecutive lines starting with |)
+        if not in_code_block and lines[i].strip().startswith('|'):
+            table_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+
+            # Parse rows: split by | and strip, skip separator rows
+            rows: list[list[str]] = []
+            for tl in table_lines:
+                stripped = tl.strip()
+                if separator_re.match(stripped):
+                    continue
+                # Split on |, drop empty first/last from leading/trailing pipes
+                cells = stripped.split('|')
+                if cells and cells[0].strip() == '':
+                    cells = cells[1:]
+                if cells and cells[-1].strip() == '':
+                    cells = cells[:-1]
+                rows.append([c.strip() for c in cells])
+
+            if not rows:
+                # All lines were separators somehow; just escape and emit
+                for tl in table_lines:
+                    result_parts.append(_html.escape(tl))
+                continue
+
+            # Compute max column widths
+            num_cols = max(len(r) for r in rows)
+            col_widths = [0] * num_cols
+            for row in rows:
+                for ci, cell in enumerate(row):
+                    col_widths[ci] = max(col_widths[ci], len(cell))
+
+            # Build aligned text lines
+            aligned: list[str] = []
+            for row in rows:
+                parts = []
+                for ci in range(num_cols):
+                    cell = row[ci] if ci < len(row) else ''
+                    parts.append(cell.ljust(col_widths[ci]))
+                aligned.append('  '.join(parts))
+
+            # HTML-escape the aligned content, then wrap in <pre>
+            escaped_table = '\n'.join(_html.escape(line) for line in aligned)
+            result_parts.append(f'<pre>{escaped_table}</pre>')
+        else:
+            # Non-table line: just HTML-escape
+            result_parts.append(_html.escape(lines[i]))
+            i += 1
+
+    return '\n'.join(result_parts)
+
+
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", os.path.expanduser("~/claude-gateway-sessions"))
 SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_IDLE_TIMEOUT", os.getenv("GATEWAY_SESSION_TIMEOUT", "3600")))  # 1 hour default
 BG_SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_BG_SESSION_IDLE_TIMEOUT", "14400"))  # 4 hours for bg-* sessions
@@ -1406,22 +1487,40 @@ class SessionManager:
         return {"status": "started"}
 
     def _send_telegram_result(self, chat_id: str, text: str, bot_token: str) -> None:
-        """Send a result message to Telegram, splitting into 4096-char chunks."""
+        """Send a result message to Telegram, splitting into 4096-char chunks.
+
+        Applies markdown table conversion and sends with HTML parse_mode.
+        Falls back to plain text (no parse_mode) if Telegram returns 400.
+        """
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         max_chunk = 4096
 
         if not text:
             text = "(empty response)"
 
-        chunks = [text[i:i + max_chunk] for i in range(0, len(text), max_chunk)]
+        # Convert tables and HTML-escape the full text
+        html_text = convert_markdown_tables(text)
+
+        chunks = [html_text[i:i + max_chunk] for i in range(0, len(html_text), max_chunk)]
 
         for chunk in chunks:
             try:
                 resp = httpx.post(
                     url,
-                    json={"chat_id": chat_id, "text": chunk},
+                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"},
                     timeout=30,
                 )
+                if resp.status_code == 400:
+                    # Fallback: retry without parse_mode (plain text, use original unescaped text chunk)
+                    logger.warning(
+                        "Telegram rejected HTML for chat_id=%s, falling back to plain text",
+                        chat_id,
+                    )
+                    resp = httpx.post(
+                        url,
+                        json={"chat_id": chat_id, "text": chunk},
+                        timeout=30,
+                    )
                 if resp.status_code != 200:
                     logger.warning(
                         "Telegram sendMessage failed for chat_id=%s: %d %s",
