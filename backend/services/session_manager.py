@@ -96,14 +96,18 @@ def convert_markdown_tables(text: str) -> str:
                 for ci, cell in enumerate(row):
                     col_widths[ci] = max(col_widths[ci], len(cell))
 
-            # Build aligned text lines
+            # Build aligned text lines with header underline
             aligned: list[str] = []
-            for row in rows:
+            for ri, row in enumerate(rows):
                 parts = []
                 for ci in range(num_cols):
                     cell = row[ci] if ci < len(row) else ''
                     parts.append(cell.ljust(col_widths[ci]))
                 aligned.append('  '.join(parts))
+                # Add underline after header row
+                if ri == 0:
+                    total_width = sum(col_widths) + 2 * (num_cols - 1)
+                    aligned.append('─' * total_width)
 
             # HTML-escape the aligned content, then wrap in <pre>
             escaped_table = '\n'.join(_html.escape(line) for line in aligned)
