@@ -527,14 +527,9 @@ class SessionManager:
         Since Claude CLI in -p mode has no tool access, we prepend key state
         files so Claude is aware of active projects in the session's CWD.
         """
-        # Check if CWD exists before accessing it
-        if not os.path.exists(session.cwd):
-            logger.debug("Session CWD does not exist, skipping context: %s", session.cwd)
-            return message
-
         context_parts = []
 
-        # Nirmana persona — injected at top for highest priority
+        # Nirmana persona — injected at top for highest priority (CWD-independent)
         if session.nirmana_mode:
             persona_path = Path(os.path.expanduser("~/eddie-nirmana/PERSONA.md"))
             if persona_path.exists():
@@ -546,7 +541,7 @@ class SessionManager:
             else:
                 logger.warning("Nirmana mode active but PERSONA.md not found at %s", persona_path)
 
-        # Meta-loop status injection
+        # Meta-loop status injection (CWD-independent)
         try:
             meta_ctx = get_bridge().format_context_injection()
             if meta_ctx:
@@ -554,7 +549,7 @@ class SessionManager:
         except Exception:
             pass
 
-        # Global memory — shared across all sessions/channels
+        # Global memory — shared across all sessions/channels (CWD-independent)
         global_memory_path = Path(os.path.expanduser("~/.mini-claude-bot/global-memory.md"))
         if global_memory_path.exists():
             try:
@@ -563,19 +558,23 @@ class SessionManager:
             except Exception as e:
                 logger.debug("Could not read global memory: %s", e)
 
-        try:
-            harness_dir = self._resolve_harness_dir(session.cwd)
-            if harness_dir.exists():
-                for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
-                    fp = harness_dir / name
-                    if fp.exists():
-                        try:
-                            content = fp.read_text()[:max_len]
-                            context_parts.append(f"[.harness/{name}]:\n{content}")
-                        except Exception as e:
-                            logger.debug("Could not read .harness file %s: %s", name, e)
-        except Exception as e:
-            logger.debug("Error accessing harness directory: %s", e)
+        # CWD-dependent context (harness state, etc.)
+        if not os.path.exists(session.cwd):
+            logger.debug("Session CWD does not exist, skipping filesystem context: %s", session.cwd)
+        else:
+            try:
+                harness_dir = self._resolve_harness_dir(session.cwd)
+                if harness_dir.exists():
+                    for name, max_len in [("config.json", 500), ("progress.md", 500), ("tasks.json", 2000)]:
+                        fp = harness_dir / name
+                        if fp.exists():
+                            try:
+                                content = fp.read_text()[:max_len]
+                                context_parts.append(f"[.harness/{name}]:\n{content}")
+                            except Exception as e:
+                                logger.debug("Could not read .harness file %s: %s", name, e)
+            except Exception as e:
+                logger.debug("Error accessing harness directory: %s", e)
 
         # Check Centurion status for harness-loop messages
         msg_lower = message.lower()
@@ -903,6 +902,12 @@ class SessionManager:
         if self._should_route_to_fg(chat_id, bot_id):
             fg_chat_id = f"fg-{chat_id}"
             logger.info("Routing foreground message to fg session (bg running): chat_id=%s → %s", chat_id, fg_chat_id)
+            # Propagate nirmana_mode to the fg session
+            parent_session = self._sessions.get(self._session_key(bot_id, chat_id))
+            if parent_session and parent_session.nirmana_mode:
+                fg_session = self._get_or_create(fg_chat_id, bot_id=bot_id)
+                fg_session.nirmana_mode = True
+                fg_session.nirmana_activated_at = parent_session.nirmana_activated_at
             return self.send(fg_chat_id, message, bot_id=bot_id)
 
         # Check concurrent process limit
@@ -1035,6 +1040,12 @@ class SessionManager:
         if self._should_route_to_fg(chat_id, bot_id):
             fg_chat_id = f"fg-{chat_id}"
             logger.info("Routing streaming to fg session (bg running): chat_id=%s → %s", chat_id, fg_chat_id)
+            # Propagate nirmana_mode to the fg session
+            parent_session = self._sessions.get(self._session_key(bot_id, chat_id))
+            if parent_session and parent_session.nirmana_mode:
+                fg_session = self._get_or_create(fg_chat_id, bot_id=bot_id)
+                fg_session.nirmana_mode = True
+                fg_session.nirmana_activated_at = parent_session.nirmana_activated_at
             yield from self.send_streaming(fg_chat_id, message, bot_id=bot_id)
             return
 
