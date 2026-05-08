@@ -144,6 +144,10 @@ async def gateway_send_stream(req: SendRequest):
                 break
             if event.get("type") == "done":
                 full_response = event.get("content", "")
+            elif event.get("type") == "error" and not full_response:
+                # Capture error content (e.g. "[BUSY]...") so the DB row isn't empty
+                # and downstream consumers can see what happened.
+                full_response = event.get("content", "")
             yield f"data: {json.dumps(event)}\n\n"
 
         # Store assistant response in DB after stream completes
