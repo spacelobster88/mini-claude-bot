@@ -9,9 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.services.session_manager import (
+    BUSY_STUCK_TIMEOUT,
     GatewaySession,
     MAX_DECOMPOSITION_RETRIES,
+    QUEUE_WAIT_TIMEOUT,
     SessionManager,
+    _busy_detail,
 )
 
 
@@ -501,3 +504,50 @@ def test_max_decomposition_retries_constant():
     """MAX_DECOMPOSITION_RETRIES is a positive integer for circuit-breaker."""
     assert isinstance(MAX_DECOMPOSITION_RETRIES, int)
     assert MAX_DECOMPOSITION_RETRIES > 0
+
+
+# ── [BUSY] message enrichment (#4) and queue timeout (#5) ────────────
+
+def test_busy_detail_empty_when_idle():
+    """A fresh session with no in-flight work yields no detail suffix."""
+    s = GatewaySession(chat_id="c", cwd="/tmp")
+    assert _busy_detail(s) == ""
+
+
+def test_busy_detail_includes_message_preview():
+    """The detail suffix names the message currently being processed."""
+    s = GatewaySession(chat_id="c", cwd="/tmp")
+    s.busy = True
+    s.busy_since = time.time() - 12
+    s.busy_message = "deploy the staging environment"
+    detail = _busy_detail(s)
+    assert 'processing: "deploy the staging environment"' in detail
+    assert "running" in detail  # elapsed time is reported
+    # Suffix is parenthesized so it appends cleanly to the base [BUSY] text.
+    assert detail.startswith(" (") and detail.endswith(")")
+
+
+def test_busy_detail_elapsed_only_without_message():
+    """If we have a start time but no preview, still report elapsed time."""
+    s = GatewaySession(chat_id="c", cwd="/tmp")
+    s.busy_since = time.time() - 5
+    detail = _busy_detail(s)
+    assert "running" in detail
+    assert "processing" not in detail
+
+
+def test_send_records_busy_message_preview(manager):
+    """send() stamps the session with a truncated preview of the in-flight message."""
+    long_msg = "x" * 200
+    with patch("backend.services.session_manager.subprocess.Popen", _mock_popen(stdout="done")):
+        manager.send("chat-busy", long_msg)
+    session = manager._sessions[manager._session_key("default", "chat-busy")]
+    assert session.busy_message == "x" * 80  # truncated to 80 chars
+
+
+def test_queue_wait_timeout_configurable_and_sane():
+    """Queue wait is env-configurable (#5) and defaults to a value > the old 120s."""
+    assert isinstance(QUEUE_WAIT_TIMEOUT, int)
+    assert QUEUE_WAIT_TIMEOUT >= 120
+    # Must stay below the stuck-busy safety net so queued waiters don't outlive recovery.
+    assert QUEUE_WAIT_TIMEOUT <= BUSY_STUCK_TIMEOUT

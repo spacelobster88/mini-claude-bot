@@ -127,7 +127,7 @@ HARNESS_SESSION_TIMEOUT = int(os.getenv("HARNESS_SESSION_TIMEOUT", "259200"))  #
 HARNESS_ARCHIVE_DIR = os.path.expanduser("~/.claude-gateway-archives")
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "600"))  # 10 minutes for normal chat
 BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "660"))  # 11 minutes safety net (must exceed CLAUDE_TIMEOUT)
-QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "120"))  # max 2 min wait in queue
+QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "300"))  # max wait in queue before [BUSY] (env-configurable)
 
 # Memory guardrails
 MEMORY_MIN_FREE_MB = int(os.getenv("GATEWAY_MIN_FREE_MB", "512"))  # 512MB minimum free before spawning
@@ -144,6 +144,21 @@ NO_TIMEOUT_PATTERNS = ["/harness", "harness loop", "harness-loop", "后台模式
 def _is_background_session(chat_id: str) -> bool:
     """Check if this is a background task session."""
     return chat_id.startswith("bg-")
+
+
+def _busy_detail(session: "GatewaySession") -> str:
+    """Build a human-readable suffix describing what the session is currently working on.
+
+    Returns something like ' (running 47s; processing: "deploy the staging env")'
+    or '' if no useful detail is available. Appended to [BUSY] replies so the user
+    knows which message is still in flight rather than a bare "still processing".
+    """
+    parts = []
+    if session.busy_since:
+        parts.append(f"running {int(time.time() - session.busy_since)}s")
+    if session.busy_message:
+        parts.append(f'processing: "{session.busy_message}"')
+    return f" ({'; '.join(parts)})" if parts else ""
 
 
 def _get_available_memory_mb() -> int:
@@ -188,6 +203,7 @@ class GatewaySession:
     first_done: bool = False
     busy: bool = False
     busy_since: float = 0.0
+    busy_message: str = ""  # preview of the message currently being processed (for [BUSY] replies)
     last_active: float = field(default_factory=time.time)
     nirmana_mode: bool = False
     nirmana_activated_at: float = 0.0
@@ -930,7 +946,7 @@ class SessionManager:
 
         # Wait for the session to become free (queue instead of reject)
         if not session._ready.wait(timeout=QUEUE_WAIT_TIMEOUT):
-            return "[BUSY] Timed out waiting in queue. The previous message is still processing."
+            return "[BUSY] Timed out waiting in queue." + _busy_detail(session)
 
         with session.lock:
             if session.busy:
@@ -946,9 +962,10 @@ class SessionManager:
                         session._proc = None
                     session.busy = False
                 else:
-                    return "[BUSY] Still processing the previous message, please wait."
+                    return "[BUSY] Still processing the previous message, please wait." + _busy_detail(session)
             session.busy = True
             session.busy_since = time.time()
+            session.busy_message = (message or "").strip()[:80]
             session._ready.clear()
 
         try:
@@ -1092,10 +1109,11 @@ class SessionManager:
                 # Race: session became busy while we waited for a process slot
                 with self._process_count_lock:
                     self._claude_process_count = max(0, self._claude_process_count - 1)
-                yield {"type": "error", "content": "Still processing the previous message, please wait.", "busy": True}
+                yield {"type": "error", "content": "Still processing the previous message, please wait." + _busy_detail(session), "busy": True}
                 return
             session.busy = True
             session.busy_since = time.time()
+            session.busy_message = (message or "").strip()[:80]
             session._ready.clear()
 
         try:
