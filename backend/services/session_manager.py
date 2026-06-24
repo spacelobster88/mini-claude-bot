@@ -161,6 +161,40 @@ def _busy_detail(session: "GatewaySession") -> str:
     return f" ({'; '.join(parts)})" if parts else ""
 
 
+# Issue #11: harness auto-mode. Matches ONLY explicit auto-mode tokens —
+# 'auto mode' / 'auto-mode' / 'auto_mode' / 'automode' / '/auto' / '自动模式'.
+# It must NOT fire on 'automate', 'auto-commit', 'automatic': a loose match
+# would silently bypass the confirm-before-execute safety default. The
+# surrounding (?<![a-z0-9]) / (?![a-z0-9]) guards keep tokens from matching
+# mid-word.
+_HARNESS_AUTO_MODE_RE = re.compile(
+    r"(?<![a-z0-9])/auto(?![a-z0-9])"            # /auto  (not /automate)
+    r"|(?<![a-z0-9])automode(?![a-z0-9])"        # automode
+    r"|(?<![a-z0-9])auto[\s\-_]+mode(?![a-z0-9])"  # auto mode / auto-mode / auto_mode
+    r"|自动模式",
+    re.IGNORECASE,
+)
+
+
+def _detect_harness_auto_mode(message: str) -> bool:
+    """True only when the message carries an EXPLICIT harness auto-mode token.
+
+    Auto mode skips the human confirmation round, so detection is intentionally
+    strict: 'automate', 'auto-commit' and 'automatic' must NOT trigger it.
+    """
+    return bool(_HARNESS_AUTO_MODE_RE.search(message or ""))
+
+
+def _harness_auto_mode_enabled() -> bool:
+    """Whether the auto/normal-mode harness routing is enabled (issue #11).
+
+    Default OFF: with the flag unset, _inject_context reproduces the original
+    hard-coded Phase-1 prompt exactly. This is the rollback lever for a prompt
+    that runs for every tenant's harness loop.
+    """
+    return os.getenv("GATEWAY_HARNESS_AUTO_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _get_available_memory_mb() -> int:
     """Get available memory in MB using macOS vm_stat.
 
@@ -537,6 +571,66 @@ class SessionManager:
         )
         return False
 
+    # Original (legacy) Phase-1 prompt — preserved verbatim so the default
+    # (auto-mode flag OFF) reproduces today's behavior exactly. See issue #11.
+    _HARNESS_PROMPT_LEGACY = (
+        "[TELEGRAM_BOT_MODE]\n"
+        "You are running via a Telegram bot in pipe mode (claude -p).\n"
+        "For harness-loop tasks:\n"
+        "- Phase 1 (foreground): Ask clarifying questions, gather requirements, propose a design, and get explicit user confirmation.\n"
+        "  This MUST take multiple turns. Do NOT skip the Q&A phase. On the FIRST message, always ask clarifying questions.\n"
+        "- NEVER output [HARNESS_EXEC_READY] on the first response. The user must explicitly confirm the plan first\n"
+        "  (e.g., say 'approved', 'confirmed', 'go ahead', 'looks good', 'yes', '可以', '确认', '开始').\n"
+        "- Only AFTER the user has explicitly confirmed the plan in a SUBSEQUENT message:\n"
+        "  Output the final plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
+        "  Do NOT start executing tasks. The bot will automatically start background execution.\n"
+        "- Phase 2 runs in a separate background session with --continue."
+    )
+
+    # Normal mode (auto-mode flag ON, no auto token): grill-me interview with a
+    # self-check prefix so Claude resolves what it can before bothering the user.
+    _HARNESS_PROMPT_NORMAL = (
+        "[TELEGRAM_BOT_MODE — NORMAL MODE]\n"
+        "You are running via a Telegram bot in pipe mode (claude -p).\n"
+        "For harness-loop tasks (relentless interview before execution):\n"
+        "- Phase 1 (foreground): FIRST decide which open questions you can resolve yourself with a sensible default "
+        "(bias: reliability > features, simplicity > complexity); only ask the genuinely BLOCKING ones, and state the defaults you chose.\n"
+        "  Then run a grill-me-style interview — relentlessly sharpen the plan/design: surface ambiguities, edge cases and risks. "
+        "This MUST take multiple turns. Do NOT skip the Q&A phase. On the FIRST message, always ask your (blocking-only) clarifying questions.\n"
+        "- NEVER output [HARNESS_EXEC_READY] on the first response. The user must explicitly confirm the plan first\n"
+        "  (e.g., say 'approved', 'confirmed', 'go ahead', 'looks good', 'yes', '可以', '确认', '开始').\n"
+        "- Only AFTER the user has explicitly confirmed the plan in a SUBSEQUENT message:\n"
+        "  Output the final plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
+        "  Do NOT start executing tasks. The bot will automatically start background execution.\n"
+        "- Phase 2 runs in a separate background session with --continue."
+    )
+
+    # Auto mode (auto-mode flag ON + explicit auto token): self-grill, no human
+    # confirmation round — emit the marker on the first response.
+    _HARNESS_PROMPT_AUTO = (
+        "[TELEGRAM_BOT_MODE — AUTO MODE]\n"
+        "You are running via a Telegram bot in pipe mode (claude -p). The user invoked AUTO mode: proceed autonomously, no human confirmation round.\n"
+        "For harness-loop tasks (self-clarify, then execute):\n"
+        "- Do NOT ask the user any clarifying questions. Instead SELF-GRILL: generate the clarifying questions you would have asked "
+        "AND answer each one yourself with a clearly-stated recommended default (bias: reliability > features, simplicity > complexity, minimal viable scope).\n"
+        "- Then produce a single concise plan summary that lists the self-answered assumptions and the task breakdown.\n"
+        "- Output the marker [HARNESS_EXEC_READY] at the END of your FIRST response. The bot starts background execution immediately — no /confirm needed.\n"
+        "- Phase 2 runs in a separate background session with --continue."
+    )
+
+    def _harness_mode_prompt(self, message: str) -> str:
+        """Pick the harness Phase-1 prompt for this message (issue #11).
+
+        Flag OFF (default) → legacy prompt, byte-for-byte unchanged.
+        Flag ON + explicit auto token → AUTO (self-grill, no confirm).
+        Flag ON otherwise → NORMAL (grill-me interview).
+        """
+        if not _harness_auto_mode_enabled():
+            return self._HARNESS_PROMPT_LEGACY
+        if _detect_harness_auto_mode(message):
+            return self._HARNESS_PROMPT_AUTO
+        return self._HARNESS_PROMPT_NORMAL
+
     def _inject_context(self, session: GatewaySession, message: str) -> str:
         """Inject filesystem context (e.g. .harness state) into the message.
 
@@ -618,19 +712,7 @@ class SessionManager:
         # where user says "resume harness" without the exact "harness-loop" keyword)
         harness_exists = self._resolve_harness_dir(session.cwd).exists()
         if harness_exists or any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
-            context_parts.append(
-                "[TELEGRAM_BOT_MODE]\n"
-                "You are running via a Telegram bot in pipe mode (claude -p).\n"
-                "For harness-loop tasks:\n"
-                "- Phase 1 (foreground): Ask clarifying questions, gather requirements, propose a design, and get explicit user confirmation.\n"
-                "  This MUST take multiple turns. Do NOT skip the Q&A phase. On the FIRST message, always ask clarifying questions.\n"
-                "- NEVER output [HARNESS_EXEC_READY] on the first response. The user must explicitly confirm the plan first\n"
-                "  (e.g., say 'approved', 'confirmed', 'go ahead', 'looks good', 'yes', '可以', '确认', '开始').\n"
-                "- Only AFTER the user has explicitly confirmed the plan in a SUBSEQUENT message:\n"
-                "  Output the final plan summary, then output the marker [HARNESS_EXEC_READY] at the END of your response.\n"
-                "  Do NOT start executing tasks. The bot will automatically start background execution.\n"
-                "- Phase 2 runs in a separate background session with --continue."
-            )
+            context_parts.append(self._harness_mode_prompt(message))
 
         if not context_parts:
             return message
@@ -1759,20 +1841,46 @@ class SessionManager:
         now = time.time()
         elapsed = int(now - task["started_at"])
 
-        if task["status"] == "running":
-            return {
+        status = task["status"]
+
+        # Defensive dead-thread detection (issue #12): the _run() finally block
+        # always writes a terminal status, but if the worker thread vanished
+        # without it (interpreter teardown, hard kill) a stale "running" could
+        # linger. Never report a dead task as still running.
+        if status == "running":
+            thread = task.get("thread")
+            if thread is not None and not thread.is_alive():
+                logger.warning(
+                    "get_background_status: task for chat_id=%s marked 'running' but thread is dead — reporting failed",
+                    chat_id,
+                )
+                task["status"] = "failed"
+                task["result"] = task.get("result") or "Thread died without setting terminal status"
+                status = "failed"
+
+        # Merge harness progress (phase / done / total) when a tasks.json exists
+        # so /status shows real progress instead of a bare elapsed timer (issue #12).
+        # Additive key — older clients that don't read it are unaffected.
+        cwd = task.get("cwd")
+        harness = self._read_harness_progress(cwd) if cwd else None
+
+        if status == "running":
+            resp = {
                 "status": "running",
                 "message": task["message"],
                 "elapsed_seconds": elapsed,
                 "started_at": task["started_at"],
             }
-
-        # completed or failed
-        return {
-            "status": task["status"],
-            "result": task["result"],
-            "elapsed_seconds": elapsed,
-        }
+        else:
+            # completed or failed
+            resp = {
+                "status": status,
+                "result": task["result"],
+                "elapsed_seconds": elapsed,
+            }
+        if harness:
+            resp["harness"] = harness
+        return resp
 
     def cleanup_stale_bg_tasks(self, chat_id: str, bot_id: str = "default") -> dict:
         """Clean up completed/failed background tasks for a chat_id.

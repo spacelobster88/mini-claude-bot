@@ -15,6 +15,8 @@ from backend.services.session_manager import (
     QUEUE_WAIT_TIMEOUT,
     SessionManager,
     _busy_detail,
+    _detect_harness_auto_mode,
+    _harness_auto_mode_enabled,
 )
 
 
@@ -551,3 +553,156 @@ def test_queue_wait_timeout_configurable_and_sane():
     assert QUEUE_WAIT_TIMEOUT >= 120
     # Must stay below the stuck-busy safety net so queued waiters don't outlive recovery.
     assert QUEUE_WAIT_TIMEOUT <= BUSY_STUCK_TIMEOUT
+
+
+# ── Issue #12: background status reliability ──────────────────────
+
+def _fake_bg_task(manager, chat_id, project_id, *, thread, status="running", cwd=None):
+    """Insert a synthetic bg task and return its key."""
+    bg_key = manager._bg_task_key("default", chat_id, project_id)
+    manager._bg_tasks[bg_key] = {
+        "thread": thread,
+        "message": "doing work",
+        "started_at": time.time() - 5,
+        "status": status,
+        "result": None,
+        "chain_depth": 0,
+        "project_id": project_id,
+        "cwd": cwd,
+    }
+    return bg_key
+
+
+def test_get_background_status_dead_thread_reported_failed(manager):
+    """A task stuck at 'running' with a dead worker thread is never reported running."""
+    import threading
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()  # thread is now finished → not alive
+    bg_key = _fake_bg_task(manager, "chatX", "proj", thread=dead)
+
+    status = manager.get_background_status("chatX", project_id="proj")
+    assert status["status"] == "failed"
+    # The stale entry is repaired in place so future reads agree.
+    assert manager._bg_tasks[bg_key]["status"] == "failed"
+
+
+def test_get_background_status_live_thread_stays_running(manager):
+    """A genuinely-alive worker thread is still reported as running."""
+    import threading
+    ev = threading.Event()
+    alive = threading.Thread(target=ev.wait)
+    alive.start()
+    try:
+        _fake_bg_task(manager, "chatY", "proj", thread=alive)
+        status = manager.get_background_status("chatY", project_id="proj")
+        assert status["status"] == "running"
+        assert status["message"] == "doing work"
+    finally:
+        ev.set()
+        alive.join()
+
+
+def test_get_background_status_merges_harness_progress(manager, tmp_session_dir):
+    """When a .harness/tasks.json exists, /status data includes phase/done/total."""
+    import json
+    import threading
+    cwd = str(tmp_session_dir / "default" / "bgproj")
+    harness_dir = Path(cwd) / ".harness"
+    harness_dir.mkdir(parents=True)
+    (harness_dir / "tasks.json").write_text(json.dumps({
+        "metadata": {"project_name": "p", "current_phase": "build"},
+        "tasks": [
+            {"id": "1", "status": "done", "phase": "build"},
+            {"id": "2", "status": "pending", "phase": "build"},
+        ],
+    }))
+    ev = threading.Event()
+    alive = threading.Thread(target=ev.wait)
+    alive.start()
+    try:
+        _fake_bg_task(manager, "chatZ", "proj", thread=alive, cwd=cwd)
+        status = manager.get_background_status("chatZ", project_id="proj")
+        assert "harness" in status
+        assert status["harness"]["total"] == 2
+        assert status["harness"]["done"] == 1
+        assert status["harness"]["current_phase"] == "build"
+    finally:
+        ev.set()
+        alive.join()
+
+
+def test_send_background_always_reaches_terminal_status(manager):
+    """_run() wraps work in try/finally so status is never left at 'running' (Fix A1)."""
+    with patch.object(manager, "send", side_effect=RuntimeError("boom")):
+        result = manager.send_background("chatT", "do it", bot_token="")
+    assert result["status"] == "started"
+    tasks = manager._find_bg_tasks_for_chat("default", "chatT")
+    assert tasks
+    task = next(iter(tasks.values()))
+    task["thread"].join(timeout=5)
+    assert task["status"] == "failed"
+    assert task["status"] != "running"
+
+
+# ── Issue #11: harness auto vs normal mode ───────────────────────
+
+@pytest.mark.parametrize("msg", [
+    "auto mode: build me a thing",
+    "AUTO MODE please",
+    "automode",
+    "run /auto now",
+    "auto-mode",
+    "auto_mode",
+    "自动模式启动",
+])
+def test_detect_auto_mode_positive(msg):
+    """Explicit auto-mode tokens are detected."""
+    assert _detect_harness_auto_mode(msg) is True
+
+
+@pytest.mark.parametrize("msg", [
+    "please automate the deployment",
+    "set up auto-commit hooks",
+    "make it automatic",
+    "this is an automobile",
+    "a normal harness task",
+    "autonomous agents",
+    "",
+])
+def test_detect_auto_mode_negative(msg):
+    """Look-alikes ('automate', 'auto-commit', 'automatic') must NOT trigger auto mode."""
+    assert _detect_harness_auto_mode(msg) is False
+
+
+def test_harness_auto_mode_disabled_by_default(monkeypatch):
+    """With the env flag unset, auto-mode routing is off (safe default)."""
+    monkeypatch.delenv("GATEWAY_HARNESS_AUTO_MODE", raising=False)
+    assert _harness_auto_mode_enabled() is False
+
+
+def test_harness_prompt_legacy_when_flag_off(manager, monkeypatch):
+    """Flag OFF reproduces the original prompt verbatim, even with an auto token present."""
+    monkeypatch.delenv("GATEWAY_HARNESS_AUTO_MODE", raising=False)
+    prompt = manager._harness_mode_prompt("auto mode build it")
+    assert prompt == SessionManager._HARNESS_PROMPT_LEGACY
+    assert "NEVER output [HARNESS_EXEC_READY] on the first response" in prompt
+
+
+def test_harness_prompt_normal_when_flag_on_no_token(manager, monkeypatch):
+    """Flag ON + plain text → grill-me normal interview, confirmation gate intact."""
+    monkeypatch.setenv("GATEWAY_HARNESS_AUTO_MODE", "1")
+    prompt = manager._harness_mode_prompt("build me a normal feature")
+    assert "NORMAL MODE" in prompt
+    assert "grill-me" in prompt.lower()
+    assert "NEVER output [HARNESS_EXEC_READY] on the first response" in prompt
+
+
+def test_harness_prompt_auto_when_flag_on_with_token(manager, monkeypatch):
+    """Flag ON + auto token → self-grill, first-response marker, no confirm gate."""
+    monkeypatch.setenv("GATEWAY_HARNESS_AUTO_MODE", "1")
+    prompt = manager._harness_mode_prompt("auto mode: ship the fix")
+    assert "AUTO MODE" in prompt
+    assert "SELF-GRILL" in prompt
+    assert "FIRST response" in prompt
+    assert "NEVER output [HARNESS_EXEC_READY] on the first response" not in prompt
