@@ -706,3 +706,93 @@ def test_harness_prompt_auto_when_flag_on_with_token(manager, monkeypatch):
     assert "SELF-GRILL" in prompt
     assert "FIRST response" in prompt
     assert "NEVER output [HARNESS_EXEC_READY] on the first response" not in prompt
+
+
+# ── Issue #10: faster context reload after a reap ────────────────
+
+def test_prune_keeps_newest_and_spares_inflight(manager, tmp_path, monkeypatch):
+    """Pruning keeps the newest `keep` transcripts; the in-flight (newest) survives."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    work = tmp_path / "work"
+    work.mkdir()
+    session = GatewaySession(chat_id="c", cwd=str(work))
+    mangled = manager._mangle_cwd(str(work))
+    proj = tmp_path / ".claude" / "projects" / mangled
+    proj.mkdir(parents=True)
+    for i in range(5):
+        fp = proj / f"sess{i}.jsonl"
+        fp.write_text("{}")
+        os.utime(fp, (1000 + i, 1000 + i))  # increasing mtime → sess4 is newest
+
+    manager._prune_session_history(session, keep=2)
+
+    remaining = sorted(p.name for p in proj.glob("*.jsonl"))
+    assert remaining == ["sess3.jsonl", "sess4.jsonl"]  # newest two kept, in-flight safe
+
+
+def test_prune_runs_even_on_failure(manager):
+    """_prune_session_history is called regardless of CLI return code (issue #10)."""
+    with patch.object(manager, "_prune_session_history") as prune, \
+         patch("backend.services.session_manager.subprocess.Popen",
+               _mock_popen(stdout="partial", stderr="boom", returncode=1)):
+        manager.send("chat-fail", "hi")
+    assert prune.called
+
+
+def test_static_cache_serves_unchanged_mtime(manager, tmp_path):
+    """A static file is read once and served from cache while its mtime is unchanged."""
+    f = tmp_path / "static.md"
+    f.write_text("v1")
+    st = os.stat(str(f))
+
+    assert manager._read_static_cached(str(f)) == "v1"
+    # Rewrite content but restore the original mtime → cache must still return v1.
+    f.write_text("v2")
+    os.utime(str(f), (st.st_atime, st.st_mtime))
+    assert manager._read_static_cached(str(f)) == "v1"
+
+
+def test_static_cache_reloads_on_mtime_change(manager, tmp_path):
+    """The cache is invalidated when the file's mtime advances."""
+    f = tmp_path / "static.md"
+    f.write_text("v1")
+    assert manager._read_static_cached(str(f)) == "v1"
+
+    f.write_text("v2")
+    st = os.stat(str(f))
+    os.utime(str(f), (st.st_atime, st.st_mtime + 10))  # bump mtime forward
+    assert manager._read_static_cached(str(f)) == "v2"
+
+
+def test_static_cache_missing_returns_none(manager, tmp_path):
+    """Missing files yield None (and don't raise)."""
+    assert manager._read_static_cached(str(tmp_path / "nope.md")) is None
+
+
+def test_static_cache_respects_max_len(manager, tmp_path):
+    """max_len truncates the returned content (used to cap global-memory)."""
+    f = tmp_path / "big.md"
+    f.write_text("x" * 100)
+    assert manager._read_static_cached(str(f), max_len=10) == "x" * 10
+
+
+def test_reload_perf_logs_once_for_cold_start(manager, caplog):
+    """RELOAD_PERF is emitted only on the first post-reap message, then suppressed."""
+    import logging
+    session = GatewaySession(chat_id="c", cwd="/tmp")
+    session.created_from_disk = True  # simulate a reaped→reloaded session
+    with caplog.at_level(logging.INFO):
+        manager._log_reload_perf(session, inject_s=0.01, cli_s=1.5)
+    assert any("RELOAD_PERF" in r.message for r in caplog.records)
+    assert session.created_from_disk is False  # flag cleared
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        manager._log_reload_perf(session, inject_s=0.01, cli_s=1.5)
+    assert not any("RELOAD_PERF" in r.message for r in caplog.records)
+
+
+def test_idle_timeout_raised_for_fewer_reloads():
+    """Interactive idle timeout default was raised to reduce cold reloads (issue #10)."""
+    from backend.services.session_manager import SESSION_IDLE_TIMEOUT
+    assert SESSION_IDLE_TIMEOUT >= 7200

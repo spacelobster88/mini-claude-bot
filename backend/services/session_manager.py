@@ -121,7 +121,7 @@ def convert_markdown_tables(text: str) -> str:
 
 
 SESSION_BASE_DIR = os.getenv("GATEWAY_SESSION_DIR", os.path.expanduser("~/claude-gateway-sessions"))
-SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_IDLE_TIMEOUT", os.getenv("GATEWAY_SESSION_TIMEOUT", "3600")))  # 1 hour default
+SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_SESSION_IDLE_TIMEOUT", os.getenv("GATEWAY_SESSION_TIMEOUT", "7200")))  # 2 hours default — fewer cold reloads (issue #10)
 BG_SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_BG_SESSION_IDLE_TIMEOUT", "14400"))  # 4 hours for bg-* sessions
 HARNESS_SESSION_TIMEOUT = int(os.getenv("HARNESS_SESSION_TIMEOUT", "259200"))  # 3 days for harness projects
 HARNESS_ARCHIVE_DIR = os.path.expanduser("~/.claude-gateway-archives")
@@ -235,6 +235,10 @@ class GatewaySession:
     cwd: str
     bot_id: str = "default"
     first_done: bool = False
+    # True when this in-memory session was (re)created from on-disk transcripts —
+    # i.e. a cold start after a reap. Used to emit one RELOAD_PERF timing log on
+    # the first message so the dominant reload cost is observable (issue #10).
+    created_from_disk: bool = False
     busy: bool = False
     busy_since: float = 0.0
     busy_message: str = ""  # preview of the message currently being processed (for [BUSY] replies)
@@ -256,6 +260,11 @@ class SessionManager:
         self._cleanup_thread: threading.Thread | None = None
         self._claude_process_count = 0  # Track concurrent Claude processes
         self._process_count_lock = threading.Lock()  # Lock for process counter
+        # Cache for static, CWD-independent injection files (persona, global memory)
+        # keyed by path → (st_mtime, content). Re-read only when mtime changes so a
+        # cold reload doesn't pay disk I/O for unchanged files (issue #10).
+        self._static_file_cache: dict[str, tuple[float, str]] = {}
+        self._static_cache_lock = threading.Lock()
         self._load_persisted_sessions()
 
     def _get_db(self):
@@ -489,6 +498,9 @@ class SessionManager:
                 os.makedirs(cwd, exist_ok=True)
                 session = GatewaySession(chat_id=chat_id, cwd=cwd, bot_id=bot_id)
                 session.first_done = self._has_existing_claude_session(cwd)
+                # If on-disk transcripts already exist, this is a cold reload
+                # (reaped session being recreated), not a brand-new chat.
+                session.created_from_disk = session.first_done
                 self._sessions[key] = session
                 self._persist_session(session)
                 logger.info(
@@ -631,6 +643,50 @@ class SessionManager:
             return self._HARNESS_PROMPT_AUTO
         return self._HARNESS_PROMPT_NORMAL
 
+    def _read_static_cached(self, path: str, max_len: int | None = None) -> str | None:
+        """Read a static, CWD-independent file, caching its content by st_mtime.
+
+        Avoids re-reading persona / global-memory from disk on every message —
+        a cost paid disproportionately on cold reloads. Returns None if the file
+        is missing or unreadable. The cache is invalidated whenever the file's
+        mtime changes, so edits are still picked up (issue #10).
+        """
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return None
+        with self._static_cache_lock:
+            cached = self._static_file_cache.get(path)
+            if cached and cached[0] == mtime:
+                content = cached[1]
+            else:
+                try:
+                    content = Path(path).read_text()
+                except OSError:
+                    return None
+                self._static_file_cache[path] = (mtime, content)
+        return content[:max_len] if max_len is not None else content
+
+    def _log_reload_perf(self, session: GatewaySession, inject_s: float, cli_s: float) -> None:
+        """Emit one structured RELOAD_PERF line for a cold-start (post-reap) message.
+
+        Logs only the first message after a session is recreated from disk, then
+        clears the flag. From the gateway we can directly time context-injection I/O
+        (inject_ms) and the full CLI wall time (cli_ms = process spawn + MCP
+        re-handshake + --continue transcript replay + generation, which the opaque
+        `claude -p` subprocess does not let us separate). Comparing inject_ms to
+        cli_ms identifies whether injection I/O is a meaningful slice of reload cost
+        or whether the CLI-internal replay/handshake dominates (issue #10).
+        """
+        if not session.created_from_disk:
+            return
+        session.created_from_disk = False
+        logger.info(
+            "RELOAD_PERF chat_id=%s cold_start=1 inject_ms=%d cli_ms=%d "
+            "(cli_ms = spawn+mcp_handshake+continue_replay+generation, not separable here)",
+            session.chat_id, int(inject_s * 1000), int(cli_s * 1000),
+        )
+
     def _inject_context(self, session: GatewaySession, message: str) -> str:
         """Inject filesystem context (e.g. .harness state) into the message.
 
@@ -639,17 +695,15 @@ class SessionManager:
         """
         context_parts = []
 
-        # Nirmana persona — injected at top for highest priority (CWD-independent)
+        # Nirmana persona — injected at top for highest priority (CWD-independent).
+        # mtime-cached so cold reloads don't re-read it from disk (issue #10).
         if session.nirmana_mode:
-            persona_path = Path(os.path.expanduser("~/eddie-nirmana/PERSONA.md"))
-            if persona_path.exists():
-                try:
-                    content = persona_path.read_text()
-                    context_parts.append(f"[Nirmana Persona]:\n{content}")
-                except Exception as e:
-                    logger.warning("Could not read Nirmana persona file: %s", e)
+            persona_path = os.path.expanduser("~/eddie-nirmana/PERSONA.md")
+            content = self._read_static_cached(persona_path)
+            if content is not None:
+                context_parts.append(f"[Nirmana Persona]:\n{content}")
             else:
-                logger.warning("Nirmana mode active but PERSONA.md not found at %s", persona_path)
+                logger.warning("Nirmana mode active but PERSONA.md unreadable at %s", persona_path)
 
         # Meta-loop status injection (CWD-independent)
         try:
@@ -659,14 +713,12 @@ class SessionManager:
         except Exception:
             pass
 
-        # Global memory — shared across all sessions/channels (CWD-independent)
-        global_memory_path = Path(os.path.expanduser("~/.mini-claude-bot/global-memory.md"))
-        if global_memory_path.exists():
-            try:
-                content = global_memory_path.read_text()[:2000]
-                context_parts.append(f"[Global Memory]:\n{content}")
-            except Exception as e:
-                logger.debug("Could not read global memory: %s", e)
+        # Global memory — shared across all sessions/channels (CWD-independent).
+        # mtime-cached so cold reloads don't re-read it from disk (issue #10).
+        global_memory_path = os.path.expanduser("~/.mini-claude-bot/global-memory.md")
+        gm_content = self._read_static_cached(global_memory_path, max_len=2000)
+        if gm_content is not None:
+            context_parts.append(f"[Global Memory]:\n{gm_content}")
 
         # CWD-dependent context (harness state, etc.)
         if not os.path.exists(session.cwd):
@@ -730,11 +782,14 @@ class SessionManager:
             "--output-format", "text",
             "--dangerously-skip-permissions",
         ]
+        _inject_t0 = time.perf_counter()
         prompt = self._inject_context(session, message)
+        inject_s = time.perf_counter() - _inject_t0
         if session.first_done:
             args.append("--continue")
         args.append(prompt)
 
+        _cli_t0 = time.perf_counter()
         proc = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
@@ -765,6 +820,7 @@ class SessionManager:
             with session.lock:
                 session._proc = None
             return (-999, "", f"Claude timed out after {CLAUDE_TIMEOUT}s")
+        cli_s = time.perf_counter() - _cli_t0
 
         with session.lock:
             session.first_done = True
@@ -778,9 +834,15 @@ class SessionManager:
                 session.chat_id, proc.returncode, stderr.strip()[:500],
             )
 
-        # Prune old session files to prevent unbounded growth
-        if proc.returncode == 0:
-            self._prune_session_history(session)
+        # Reload-path instrumentation (issue #10) — one line on the first
+        # post-reap message, identifying the dominant cold-start cost.
+        self._log_reload_perf(session, inject_s, cli_s)
+
+        # Prune old session files to prevent unbounded growth. Done on EVERY run
+        # (not only success): a failed run still leaves a fresh transcript that
+        # would otherwise accumulate and slow future reloads. The newest `keep`
+        # files survive, so the in-flight transcript is never removed (issue #10).
+        self._prune_session_history(session)
 
         return (proc.returncode, stdout.strip() if stdout else "", stderr.strip() if stderr else "")
 
@@ -800,11 +862,14 @@ class SessionManager:
             "--verbose",
             "--dangerously-skip-permissions",
         ]
+        _inject_t0 = time.perf_counter()
         prompt = self._inject_context(session, message)
+        inject_s = time.perf_counter() - _inject_t0
         if session.first_done:
             args.append("--continue")
         args.append(prompt)
 
+        _cli_t0 = time.perf_counter()
         proc = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
@@ -932,9 +997,16 @@ class SessionManager:
                 session.chat_id, proc.returncode, stderr[:500],
             )
 
-        # Prune old session files on success
-        if proc.returncode == 0:
-            self._prune_session_history(session)
+        # Reload-path instrumentation (issue #10) — one line on the first
+        # post-reap message, identifying the dominant cold-start cost.
+        cli_s = time.perf_counter() - _cli_t0
+        self._log_reload_perf(session, inject_s, cli_s)
+
+        # Prune old session files on EVERY run (not only success): a failed run
+        # still leaves a fresh transcript that would otherwise accumulate and
+        # slow future reloads. Newest `keep` survive, so the in-flight transcript
+        # is never removed (issue #10).
+        self._prune_session_history(session)
 
         # Handle non-zero exit code
         if proc.returncode != 0 and not error_occurred:
