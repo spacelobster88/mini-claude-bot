@@ -320,3 +320,41 @@ def gateway_nirmana_state(chat_id: str, bot_id: str = Query(default="default")) 
     state = manager.get_nirmana_state(chat_id, bot_id=bot_id)
     return NirmanaStateResponse(**state)
 
+
+# ── Away issue-automation (/away, /back) ────────────────────────
+
+
+class AwayStartRequest(BaseModel):
+    chat_id: str
+    bot_id: str = "default"
+    bot_token: str = ""
+
+
+class AwayStopRequest(BaseModel):
+    chat_id: str
+    bot_id: str = "default"
+
+
+@router.post("/away/start")
+def gateway_away_start(req: AwayStartRequest):
+    """Begin /away issue-automation: pick up eligible issues across configured repos."""
+    from backend.services.away_automation import get_away_automation
+
+    return get_away_automation().start(req.chat_id, req.bot_id, req.bot_token)
+
+
+@router.post("/away/stop")
+def gateway_away_stop(req: AwayStopRequest):
+    """Halt new /away pickups and return the per-issue roundup."""
+    from backend.services.away_automation import get_away_automation
+
+    return get_away_automation().stop(req.chat_id)
+
+
+@router.get("/away/status/{chat_id}")
+def gateway_away_status(chat_id: str):
+    """Current /away automation status for a chat."""
+    from backend.services.away_automation import get_away_automation
+
+    return get_away_automation().status(chat_id)
+
