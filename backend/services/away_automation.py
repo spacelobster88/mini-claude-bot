@@ -362,7 +362,17 @@ class AwayAutomation:
                 start_point = f"origin/{base}"
             except Exception as e:  # noqa: BLE001 - offline / no remote → local base
                 logger.info("away: fetch origin %s failed, using local base: %s", base, e)
-            self._git_run(["worktree", "add", "-b", branch, wt, start_point], cwd=local)
+            try:
+                self._git_run(["worktree", "add", "-b", branch, wt, start_point], cwd=local)
+            except Exception:  # noqa: BLE001 - leftover shell from an interrupted run
+                # A 0-commit ``away/issue-N`` worktree/branch left by a prior
+                # interrupted /away must never permanently block re-creation
+                # (issue #21, proposed fix #3). GC the shell and retry exactly
+                # once. The leftover is scratch for *this same issue*, which we
+                # are about to redo from ``start_point`` anyway; nothing shipped
+                # is at risk (push only happens on success in _finalize).
+                self._gc_away_worktree(local, wt, branch)
+                self._git_run(["worktree", "add", "-b", branch, wt, start_point], cwd=local)
 
             # 3. Frame the issue as a self-driving harness task and launch the loop.
             message = self._frame_message(repo, number, title, body)
@@ -387,10 +397,25 @@ class AwayAutomation:
                 commits = self._count_commits(base, branch, wt)
                 state["commits"] = commits
                 if commits == 0:
-                    state["status"] = "failed"
-                    state["error"] = (
-                        "harness loop completed but produced no commits (empty branch)"
-                    )
+                    # ``away/issue-N`` is empty — but the work may have landed
+                    # outside it (direct commit to base, a differently-named
+                    # branch, a squash, or a merged PR / prior session). Verify
+                    # delivery by artifact, not by this branch's PR status
+                    # (issue #21, proposed fixes #1+#2): a CLOSED-as-completed
+                    # issue is delivered, not a failure. Only a genuinely
+                    # undelivered empty branch is a real failure.
+                    if self._issue_delivered(repo, number):
+                        state["status"] = "done"
+                        state["delivered_elsewhere"] = True
+                    else:
+                        state["status"] = "failed"
+                        state["error"] = (
+                            "harness loop completed but produced no commits (empty branch)"
+                        )
+                    # Either way this is a 0-commit shell: GC it so a later
+                    # /away can cleanly re-create the branch instead of skipping
+                    # on a pre-existing empty branch (issue #21, proposed fix #3).
+                    self._gc_away_worktree(local, wt, branch)
                 else:
                     pr_url = self._finalize(repo, base, branch, number, title, wt)
                     state["status"] = "done"
@@ -445,6 +470,50 @@ class AwayAutomation:
             return int((out or "").strip() or 0)
         except ValueError:
             return 0
+
+    def _issue_delivered(self, repo: str, number: int) -> bool:
+        """True if the issue already landed outside ``away/issue-N``.
+
+        Used only when that branch is empty (issue #21): an issue is "delivered"
+        if it is CLOSED as completed — the work reached base / another branch / a
+        merged PR even though this branch produced nothing. Closed as NOT_PLANNED
+        is a dismissal, not a delivery.
+
+        Fails **closed**: any gh/parse error → ``False`` (treat as not delivered),
+        so a flaky network can never let a genuinely-empty branch be reported as
+        a fabricated success.
+        """
+        try:
+            out = self._gh_run(
+                ["issue", "view", str(number), "-R", repo, "--json", "state,stateReason"]
+            )
+            data = json.loads(out) if out and out.strip() else {}
+        except Exception:  # noqa: BLE001 - unreachable / unparseable → not delivered
+            return False
+        if not isinstance(data, dict):
+            return False
+        state = str(data.get("state") or "").upper()
+        reason = str(data.get("stateReason") or "").upper()
+        return state == "CLOSED" and reason != "NOT_PLANNED"
+
+    def _gc_away_worktree(self, local: str, wt: str, branch: str) -> None:
+        """Remove a 0-commit away worktree + its branch so a later /away can
+        cleanly re-create it (issue #21, proposed fix #3).
+
+        Every step is best-effort and individually guarded — GC must never be
+        fatal nor flip a delivered issue to failed. Callers only invoke this on a
+        verified-empty branch (commits == 0) or on a leftover shell that is about
+        to be rebuilt, so ``branch -D`` discards nothing that shipped.
+        """
+        for args in (
+            ["worktree", "remove", "--force", wt],
+            ["worktree", "prune"],
+            ["branch", "-D", branch],
+        ):
+            try:
+                self._git_run(args, cwd=local)
+            except Exception as e:  # noqa: BLE001 - best-effort cleanup, never fatal
+                logger.info("away: gc step %s failed (non-fatal): %s", args[:2], e)
 
     def _finalize(self, repo: str, base: str, branch: str, number: int, title: str, wt: str) -> str:
         """Push the branch and open a draft PR. Returns the PR URL.

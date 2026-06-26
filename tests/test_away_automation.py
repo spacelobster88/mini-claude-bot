@@ -386,6 +386,169 @@ def test_commits_present_finalizes_and_records_count(tmp_path, repos_file):
     assert len([c for c in engine._gh_calls if c[:2] == ["pr", "create"]]) == 1
 
 
+# ── delivery-by-artifact for empty branches (issue #21) ─────────────
+
+
+def _gh_run_with_issue_state(gh_calls, state, reason=None, *, pr_url="https://x/pull/1\n"):
+    """gh_run mock that reports a given issue state/stateReason on `issue view`."""
+
+    def gh_run(args):
+        gh_calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([])  # eligibility is supplied separately via gh_issues
+        if args[:2] == ["issue", "view"]:
+            payload = {"state": state}
+            if reason is not None:
+                payload["stateReason"] = reason
+            return json.dumps(payload)
+        if args[:2] == ["pr", "create"]:
+            return pr_url
+        return ""
+
+    return gh_run
+
+
+def _engine_with_states(tmp_path, repos_file, issue_no, *, state, reason=None):
+    """Build an engine whose worker leaves an empty branch and whose issue
+    reports the given closed/open state — exercising the #21 delivery gate."""
+    path = repos_file([{"repo": "owner/a"}])
+    gh_calls = []
+    git_calls = []
+
+    base_gh = _gh_run_with_issue_state(gh_calls, state, reason)
+
+    def gh_run(args):
+        # eligible_issues still needs the real issue list; delegate the rest.
+        if args[:2] == ["issue", "list"]:
+            gh_calls.append(args)
+            return json.dumps([_issue(issue_no)])
+        return base_gh(args)
+
+    engine = make_engine(
+        tmp_path,
+        repos_path=path,
+        gh_run=gh_run,
+        git_run=_git_run_with_commits(0, git_calls),  # empty branch
+    )
+    engine._gh_calls = gh_calls
+    engine._git_calls2 = git_calls
+    return engine, gh_calls, git_calls
+
+
+def test_empty_branch_but_issue_closed_marked_done_not_failed(tmp_path, repos_file):
+    """#21: work landed outside away/issue-N (issue CLOSED) → done, not a false failure."""
+    engine, gh_calls, git_calls = _engine_with_states(
+        tmp_path, repos_file, 7, state="CLOSED", reason="COMPLETED"
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "done"
+    assert result["delivered_elsewhere"] is True
+    assert result["commits"] == 0
+    assert result.get("pr_url") is None
+    # No PR fabricated, no push for an empty branch...
+    assert [c for c in gh_calls if c[:2] == ["pr", "create"]] == []
+    assert [a for (a, _c) in git_calls if a and a[0] == "push"] == []
+    # ...and the 0-commit shell is GC'd so a later /away can retry cleanly.
+    assert any(a[:2] == ["worktree", "remove"] for (a, _c) in git_calls)
+    assert any(a == ["branch", "-D", "away/issue-7"] for (a, _c) in git_calls)
+
+
+def test_empty_branch_issue_closed_not_planned_is_failure(tmp_path, repos_file):
+    """A NOT_PLANNED close is a dismissal, not a delivery → stays failed."""
+    engine, _gh, git_calls = _engine_with_states(
+        tmp_path, repos_file, 8, state="CLOSED", reason="NOT_PLANNED"
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "failed"
+    assert "no commits" in result["error"]
+    # Still GC'd so the empty shell can't block retry.
+    assert any(a[:2] == ["worktree", "remove"] for (a, _c) in git_calls)
+
+
+def test_empty_branch_issue_still_open_is_failure(tmp_path, repos_file):
+    """Empty branch + still-open issue = genuinely undelivered → failed (fail closed)."""
+    engine, _gh, git_calls = _engine_with_states(
+        tmp_path, repos_file, 9, state="OPEN"
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "failed"
+    assert result.get("delivered_elsewhere") is None
+
+
+def test_delivery_check_fails_closed_on_gh_error(tmp_path, repos_file):
+    """If `gh issue view` errors, treat as not-delivered (never a false 'done')."""
+    path = repos_file([{"repo": "owner/a"}])
+    git_calls = []
+
+    def gh_run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([_issue(10)])
+        if args[:2] == ["issue", "view"]:
+            raise RuntimeError("gh: network unreachable")
+        return ""
+
+    engine = make_engine(
+        tmp_path,
+        repos_path=path,
+        gh_run=gh_run,
+        git_run=_git_run_with_commits(0, git_calls),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "failed"
+    assert result.get("delivered_elsewhere") is None
+
+
+def test_worktree_add_retries_once_after_gc_on_leftover(tmp_path, repos_file):
+    """#21 fix #3: a leftover shell that breaks `worktree add` is GC'd + retried once."""
+    path = repos_file([{"repo": "owner/a"}])
+    git_calls = []
+    state = {"add_attempts": 0}
+
+    def git_run(args, cwd=None):
+        git_calls.append((args, cwd))
+        if args[:2] == ["worktree", "add"]:
+            state["add_attempts"] += 1
+            if state["add_attempts"] == 1:
+                raise RuntimeError("fatal: 'away/issue-11' already exists")
+            return ""
+        if args[:2] == ["rev-list", "--count"]:
+            return "2\n"  # second add succeeds → branch has commits → finalize
+        return ""
+
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(11)],
+        repos_path=path,
+        git_run=git_run,
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert state["add_attempts"] == 2  # retried exactly once
+    # GC ran between the two add attempts.
+    assert any(a[:2] == ["worktree", "remove"] for (a, _c) in git_calls)
+    assert result["status"] == "done"
+    assert result["commits"] == 2
+
+
 # ── stale-base fetch (issue #19 root cause #4) ──────────────────────
 
 
