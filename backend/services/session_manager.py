@@ -126,8 +126,8 @@ BG_SESSION_IDLE_TIMEOUT = int(os.getenv("GATEWAY_BG_SESSION_IDLE_TIMEOUT", "1440
 HARNESS_SESSION_TIMEOUT = int(os.getenv("HARNESS_SESSION_TIMEOUT", "259200"))  # 3 days for harness projects
 HARNESS_ARCHIVE_DIR = os.path.expanduser("~/.claude-gateway-archives")
 CLAUDE_TIMEOUT = int(os.getenv("GATEWAY_CLAUDE_TIMEOUT", "600"))  # 10 minutes for normal chat
-BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "660"))  # 11 minutes safety net (must exceed CLAUDE_TIMEOUT)
-QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "300"))  # max wait in queue before [BUSY] (env-configurable)
+BUSY_STUCK_TIMEOUT = int(os.getenv("GATEWAY_BUSY_STUCK_TIMEOUT", "960"))  # 16 min safety net (must exceed CLAUDE_TIMEOUT and QUEUE_WAIT_TIMEOUT)
+QUEUE_WAIT_TIMEOUT = int(os.getenv("GATEWAY_QUEUE_WAIT_TIMEOUT", "900"))  # 15 min max wait in queue before [BUSY] (must stay <= BUSY_STUCK_TIMEOUT)
 
 # Memory guardrails
 MEMORY_MIN_FREE_MB = int(os.getenv("GATEWAY_MIN_FREE_MB", "512"))  # 512MB minimum free before spawning
