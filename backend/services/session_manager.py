@@ -1885,6 +1885,39 @@ class SessionManager:
             })
         return jobs
 
+    def get_queue_status(self, chat_id: str, bot_id: str = "default") -> dict:
+        """Message-queue / session status for the /queue command.
+
+        Reports whether this chat's session is busy, a preview of the in-flight
+        message (busy_message), how long it has been running, the global Claude
+        process-slot usage, and a worst-case estimate of how long a newly-queued
+        message would wait before the slot frees (bounded by the stuck-reset).
+        """
+        with self._process_count_lock:
+            slots_used = self._claude_process_count
+        session = self._sessions.get(self._session_key(bot_id, chat_id))
+        if session is None or not session.busy:
+            return {
+                "busy": False,
+                "busy_message": "",
+                "elapsed_seconds": 0,
+                "slots_used": slots_used,
+                "slots_max": MAX_CLAUDE_PROCESSES,
+                "queue_wait_timeout": QUEUE_WAIT_TIMEOUT,
+                "queue_wait_remaining": 0,
+            }
+        elapsed = int(time.time() - session.busy_since) if session.busy_since else 0
+        return {
+            "busy": True,
+            "busy_message": session.busy_message,
+            "elapsed_seconds": elapsed,
+            "slots_used": slots_used,
+            "slots_max": MAX_CLAUDE_PROCESSES,
+            "queue_wait_timeout": QUEUE_WAIT_TIMEOUT,
+            # Worst case the in-flight job is force-freed at BUSY_STUCK_TIMEOUT.
+            "queue_wait_remaining": max(0, BUSY_STUCK_TIMEOUT - elapsed),
+        }
+
     def get_harness_status(self, chat_id: str, bot_id: str = "default") -> dict:
         """Backward-compatible single-job harness status. Returns the first job or idle."""
         jobs = self.get_all_harness_status(chat_id, bot_id=bot_id)
