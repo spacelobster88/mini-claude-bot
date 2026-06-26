@@ -242,6 +242,9 @@ class GatewaySession:
     busy: bool = False
     busy_since: float = 0.0
     busy_message: str = ""  # preview of the message currently being processed (for [BUSY] replies)
+    # When True, harness Phase-1 always uses the AUTO (self-grill, no /confirm) prompt
+    # regardless of the global GATEWAY_HARNESS_AUTO_MODE flag. Set for /away worktree loops.
+    force_auto_mode: bool = False
     last_active: float = field(default_factory=time.time)
     nirmana_mode: bool = False
     nirmana_activated_at: float = 0.0
@@ -632,13 +635,17 @@ class SessionManager:
         "- Phase 2 runs in a separate background session with --continue."
     )
 
-    def _harness_mode_prompt(self, message: str) -> str:
+    def _harness_mode_prompt(self, message: str, force_auto: bool = False) -> str:
         """Pick the harness Phase-1 prompt for this message (issue #11).
 
+        force_auto=True → AUTO unconditionally (used by /away worktree loops, which
+                          must self-drive without /confirm; bypasses the global flag).
         Flag OFF (default) → legacy prompt, byte-for-byte unchanged.
         Flag ON + explicit auto token → AUTO (self-grill, no confirm).
         Flag ON otherwise → NORMAL (grill-me interview).
         """
+        if force_auto:
+            return self._HARNESS_PROMPT_AUTO
         if not _harness_auto_mode_enabled():
             return self._HARNESS_PROMPT_LEGACY
         if _detect_harness_auto_mode(message):
@@ -765,8 +772,9 @@ class SessionManager:
         # Also inject TELEGRAM_BOT_MODE if .harness/ exists (covers resume scenarios
         # where user says "resume harness" without the exact "harness-loop" keyword)
         harness_exists = self._resolve_harness_dir(session.cwd).exists()
-        if harness_exists or any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
-            context_parts.append(self._harness_mode_prompt(message))
+        force_auto = getattr(session, "force_auto_mode", False)
+        if harness_exists or force_auto or any(kw in msg_lower for kw in ["harness-loop", "harness loop", "后台模式", "后台运行", "后台执行"]):
+            context_parts.append(self._harness_mode_prompt(message, force_auto=force_auto))
 
         if not context_parts:
             return message
@@ -1300,7 +1308,7 @@ class SessionManager:
             with self._process_count_lock:
                 self._claude_process_count = max(0, self._claude_process_count - 1)
 
-    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", chain_depth: int = 0, project_id: str = "") -> dict:
+    def send_background(self, chat_id: str, message: str, bot_token: str, bot_id: str = "default", chain_depth: int = 0, project_id: str = "", cwd: str | None = None, force_auto_mode: bool = False) -> dict:
         """Start a background Claude CLI task for the given chat.
 
         Uses a separate session (bg-{chat_id}-{project_id}) so it doesn't interfere with
@@ -1311,7 +1319,7 @@ class SessionManager:
         # Resolve project_id from main session CWD if not provided
         main_session = self._get_or_create(chat_id, bot_id=bot_id)
         if not project_id:
-            project_id = self._make_project_id(main_session.cwd)
+            project_id = self._make_project_id(cwd or main_session.cwd)
 
         bg_key = self._bg_task_key(bot_id, chat_id, project_id)
 
@@ -1337,12 +1345,18 @@ class SessionManager:
                     existing["result"] = "Thread died unexpectedly"
 
         bg_session_key = f"bg-{chat_id}-{project_id}"
-        # Share CWD with main session so background work is visible to main chat
+        # Default: share CWD with main session so background work is visible to main
+        # chat. /away worktree loops pass an explicit cwd (the per-issue git worktree)
+        # and force_auto_mode so they self-drive without a /confirm round.
+        target_cwd = cwd or main_session.cwd
         bg_session = self._get_or_create(bg_session_key, bot_id=bot_id)
-        if bg_session.cwd != main_session.cwd:
-            bg_session.cwd = main_session.cwd
+        if cwd:
+            os.makedirs(cwd, exist_ok=True)
+        bg_session.force_auto_mode = force_auto_mode
+        if bg_session.cwd != target_cwd:
+            bg_session.cwd = target_cwd
             self._persist_session(bg_session)
-            logger.info("Synced bg session CWD to main: %s", main_session.cwd)
+            logger.info("Set bg session CWD: %s (force_auto=%s)", target_cwd, force_auto_mode)
         started_at = time.time()
 
         task_info = {
@@ -1353,7 +1367,7 @@ class SessionManager:
             "result": None,
             "chain_depth": chain_depth,
             "project_id": project_id,
-            "cwd": main_session.cwd,
+            "cwd": target_cwd,
         }
         self._bg_tasks[bg_key] = task_info
 
