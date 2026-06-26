@@ -63,6 +63,10 @@ def make_engine(
     if git_run is None:
         def git_run(args, cwd=None):
             git_calls.append((args, cwd))
+            # By default a worker leaves one real commit on its branch, so the
+            # artifact gate sees work and the run finalizes (push + draft PR).
+            if args[:2] == ["rev-list", "--count"]:
+                return "1\n"
             return ""
 
     if launch_loop is None:
@@ -300,3 +304,127 @@ def test_stop_before_pickup_skips_new_work(tmp_path, repos_file, monkeypatch):
 
     # With concurrency=1, later issues must be skipped once stop is set.
     assert len(launched) < 3
+
+
+# ── artifact-based completion gate (issue #19) ──────────────────────
+
+
+def _git_run_with_commits(commits, git_calls, *, fetch_raises=False):
+    """Build a git_run mock that reports ``commits`` ahead of base."""
+
+    def git_run(args, cwd=None):
+        git_calls.append((args, cwd))
+        if fetch_raises and args[:1] == ["fetch"]:
+            raise RuntimeError("no remote 'origin'")
+        if args[:2] == ["rev-list", "--count"]:
+            return f"{commits}\n"
+        return ""
+
+    return git_run
+
+
+def test_empty_branch_completed_marked_failed_no_pr(tmp_path, repos_file):
+    """A 'completed' loop that left zero commits is a failure, not a silent done."""
+    path = repos_file([{"repo": "owner/a"}])
+    git_calls = []
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(20)],
+        repos_path=path,
+        git_run=_git_run_with_commits(0, git_calls),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "failed"
+    assert result["commits"] == 0
+    assert "no commits" in result["error"]
+    # No PR opened and no branch pushed for an empty branch.
+    assert [c for c in engine._gh_calls if c[:2] == ["pr", "create"]] == []
+    assert [a for (a, _c) in git_calls if a and a[0] == "push"] == []
+
+
+def test_empty_branch_failed_even_under_dry_run(tmp_path, repos_file):
+    """The gate runs before _finalize, so dry-run can't mask the empty branch."""
+    path = repos_file([{"repo": "owner/a"}])
+    git_calls = []
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(21)],
+        repos_path=path,
+        dry_run=True,
+        git_run=_git_run_with_commits(0, git_calls),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "failed"
+    assert result["pr_url"] is None
+
+
+def test_commits_present_finalizes_and_records_count(tmp_path, repos_file):
+    """A branch with commits ahead of base finalizes and reports the count."""
+    path = repos_file([{"repo": "owner/a"}])
+    git_calls = []
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(22)],
+        repos_path=path,
+        git_run=_git_run_with_commits(3, git_calls),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    result = engine.status("chat1")["results"][0]
+    assert result["status"] == "done"
+    assert result["commits"] == 3
+    assert len([c for c in engine._gh_calls if c[:2] == ["pr", "create"]]) == 1
+
+
+# ── stale-base fetch (issue #19 root cause #4) ──────────────────────
+
+
+def test_worktree_fetches_origin_and_branches_from_origin_base(tmp_path, repos_file):
+    path = repos_file([{"repo": "owner/a", "base": "main"}])
+    git_calls = []
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(23)],
+        repos_path=path,
+        git_run=_git_run_with_commits(1, git_calls),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    assert ["fetch", "origin", "main"] in [a for (a, _c) in git_calls]
+    adds = [a for (a, _c) in git_calls if a[:2] == ["worktree", "add"]]
+    assert len(adds) == 1
+    # Branch off origin/main, not the stale local main.
+    assert adds[0][-1] == "origin/main"
+
+
+def test_fetch_failure_falls_back_to_local_base(tmp_path, repos_file):
+    """Offline / no remote: fetch fails silently and the worker still proceeds."""
+    path = repos_file([{"repo": "owner/a", "base": "main"}])
+    git_calls = []
+    engine = make_engine(
+        tmp_path,
+        gh_issues=[_issue(24)],
+        repos_path=path,
+        git_run=_git_run_with_commits(1, git_calls, fetch_raises=True),
+    )
+
+    engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+
+    adds = [a for (a, _c) in git_calls if a[:2] == ["worktree", "add"]]
+    assert len(adds) == 1
+    assert adds[0][-1] == "main"  # fell back to local base
+    # The worker is not derailed by the fetch failure.
+    assert engine.status("chat1")["results"][0]["status"] == "done"

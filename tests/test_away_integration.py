@@ -27,6 +27,9 @@ def _gh_factory(issues, pr_url="https://github.com/owner/repoA/pull/99"):
 def _engine(tmp_path, *, gh, git_calls, launches, dry_run=False):
     def git_run(args, cwd=None):
         git_calls.append(args)
+        # Default: the worker left a real commit, so the artifact gate passes.
+        if args[:2] == ["rev-list", "--count"]:
+            return "1\n"
         return ""
 
     def launch_loop(*, chat_id, message, bot_token, bot_id, cwd, force_auto_mode):

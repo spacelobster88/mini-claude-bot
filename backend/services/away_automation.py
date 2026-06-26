@@ -325,11 +325,22 @@ class AwayAutomation:
             "branch": branch,
             "status": "failed",
             "pr_url": None,
+            "commits": 0,
         }
 
         try:
-            # 1+2. Create a per-issue worktree on a fresh branch off base.
-            self._git_run(["worktree", "add", "-b", branch, wt, base], cwd=local)
+            # 1+2. Create a per-issue worktree on a fresh branch off base. Fetch
+            # origin first so the worktree sees current fixtures/context (issue #19
+            # root cause #4: a stale local base made workers miss the very fixtures
+            # the issue referenced). Best-effort — fall back to the local base if
+            # there's no remote / we're offline. Never fatal.
+            start_point = base
+            try:
+                self._git_run(["fetch", "origin", base], cwd=local)
+                start_point = f"origin/{base}"
+            except Exception as e:  # noqa: BLE001 - offline / no remote → local base
+                logger.info("away: fetch origin %s failed, using local base: %s", base, e)
+            self._git_run(["worktree", "add", "-b", branch, wt, start_point], cwd=local)
 
             # 3. Frame the issue as a self-driving harness task and launch the loop.
             message = self._frame_message(repo, number, title, body)
@@ -346,9 +357,22 @@ class AwayAutomation:
             terminal = self._wait_for_loop(worker_chat_id, bot_id)
 
             if terminal == "completed":
-                pr_url = self._finalize(repo, base, branch, number, title, wt)
-                state["status"] = "done"
-                state["pr_url"] = pr_url
+                # Artifact-based completion gate (issue #19 root cause #2): a loop
+                # that "completed" but left the branch empty has shipped nothing.
+                # Report it honestly as failed instead of pushing an empty branch
+                # and opening a no-op PR. Runs *before* _finalize so the gate holds
+                # even under AWAY_DRY_RUN — otherwise dry-run would mask the bug.
+                commits = self._count_commits(base, branch, wt)
+                state["commits"] = commits
+                if commits == 0:
+                    state["status"] = "failed"
+                    state["error"] = (
+                        "harness loop completed but produced no commits (empty branch)"
+                    )
+                else:
+                    pr_url = self._finalize(repo, base, branch, number, title, wt)
+                    state["status"] = "done"
+                    state["pr_url"] = pr_url
             else:
                 state["status"] = "failed"
                 state["error"] = f"harness loop {terminal}"
@@ -384,6 +408,21 @@ class AwayAutomation:
             if time.monotonic() >= deadline:
                 return "timeout"
             self._sleep(poll_interval)
+
+    def _count_commits(self, base: str, branch: str, wt: str) -> int:
+        """Commits on ``branch`` ahead of ``base`` — the artifact-gate signal.
+
+        Any error (unreadable worktree, bad output) → 0, i.e. "no artifacts",
+        which the caller treats as *not done* rather than a silent success.
+        """
+        try:
+            out = self._git_run(["rev-list", "--count", f"{base}..{branch}"], cwd=wt)
+        except Exception:  # noqa: BLE001 - unreadable → treat as no artifacts
+            return 0
+        try:
+            return int((out or "").strip() or 0)
+        except ValueError:
+            return 0
 
     def _finalize(self, repo: str, base: str, branch: str, number: int, title: str, wt: str) -> str:
         """Push the branch and open a draft PR. Returns the PR URL.
