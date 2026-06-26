@@ -90,6 +90,10 @@ class AwayAutomation:
         self._results: dict[str, dict] = {}
         self._stop_flags: set[str] = set()
         self._workers: list[threading.Thread] = []
+        # worker_chat_ids currently in flight — guards against double-dispatch
+        # of the same (repo, issue) on rapid/repeated /away (issue #20). Cleared
+        # when each worker finishes (see _worker) so it's self-healing.
+        self._active: set[str] = set()
 
     # ── config ──────────────────────────────────────────────────────
 
@@ -224,12 +228,24 @@ class AwayAutomation:
         semaphore = threading.Semaphore(max_concurrency)
         queued_issues: list[dict] = []
         workers: list[threading.Thread] = []
+        skipped_inflight = 0
 
         for entry, issue in selected:
             repo_name = self._repo_name(entry["repo"])
             number = issue["number"]
             branch = f"away/issue-{number}"
             worker_chat_id = f"away-{repo_name}-{number}"
+
+            # Idempotent dispatch (issue #20): never spawn a second worker for an
+            # (repo, issue) that already has one in flight, so rapid/repeated /away
+            # can't double-dispatch and race the #19 artifact gate. The marker is
+            # cleared in _worker's finally, so a finished/failed issue is free to
+            # be dispatched again later.
+            with self._lock:
+                if worker_chat_id in self._active:
+                    skipped_inflight += 1
+                    continue
+                self._active.add(worker_chat_id)
 
             queued_issues.append(
                 {
@@ -258,6 +274,7 @@ class AwayAutomation:
             "queued": len(queued_issues),
             "issues": queued_issues,
             "capped": capped,
+            "skipped_inflight": skipped_inflight,
         }
 
     def stop(self, chat_id: str) -> dict:
@@ -297,6 +314,11 @@ class AwayAutomation:
             self._process_issue(entry, issue, chat_id, worker_chat_id, bot_id, bot_token)
         finally:
             semaphore.release()
+            # Release the in-flight dispatch marker (issue #20) so this issue can
+            # be dispatched again on a later /away. Always runs — even on skip or
+            # crash — so a failed worker never permanently blocks re-dispatch.
+            with self._lock:
+                self._active.discard(worker_chat_id)
 
     def _process_issue(
         self,

@@ -2159,6 +2159,14 @@ class SessionManager:
         session = self._get_or_create(chat_id, bot_id=bot_id)
 
         if activate:
+            # Idempotent: if already away, do nothing with side effects. A repeat
+            # /away must NOT reset the away clock, write a duplicate snapshot, or
+            # re-switch cadence (issue #20). Mirrors the guarded `back` path below.
+            if session.nirmana_mode:
+                return {
+                    "status": "ok",
+                    "message": f"Already in Nirmana mode (since {session.nirmana_activated_at})",
+                }
             session.nirmana_mode = True
             session.nirmana_activated_at = time.time()
             self._persist_session(session)

@@ -75,17 +75,28 @@ def test_nirmana_away_idempotent(client, manager):
     first_activated_at = manager._sessions[key].nirmana_activated_at
     assert first_activated_at > 0
 
-    # Second call — should succeed without error
+    # Second call — idempotent no-op: must NOT reset the clock or re-snapshot.
+    state_dir = os.path.expanduser("~/eddie-nirmana/state")
+    snaps_before = (
+        len([f for f in os.listdir(state_dir) if f.startswith("session-") and f.endswith(".md")])
+        if os.path.isdir(state_dir) else 0
+    )
+
     r2 = client.post("/api/gateway/nirmana", json=payload)
     assert r2.status_code == 200
     data = r2.json()
     assert data["status"] == "ok"
+    assert "Already in Nirmana mode" in data["message"]
 
-    # Mode should still be True
+    # Mode stays True; the away clock is NOT reset on re-entry (issue #20).
     session = manager._sessions[key]
     assert session.nirmana_mode is True
-    # activated_at may be updated (re-activation) — that's fine, just must be > 0
-    assert session.nirmana_activated_at > 0
+    assert session.nirmana_activated_at == first_activated_at
+    # And no duplicate snapshot file is written on re-entry.
+    snaps_after = len(
+        [f for f in os.listdir(state_dir) if f.startswith("session-") and f.endswith(".md")]
+    )
+    assert snaps_after == snaps_before
 
 
 def test_nirmana_away_creates_snapshot(client):

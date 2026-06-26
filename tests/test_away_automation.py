@@ -428,3 +428,52 @@ def test_fetch_failure_falls_back_to_local_base(tmp_path, repos_file):
     assert adds[0][-1] == "main"  # fell back to local base
     # The worker is not derailed by the fetch failure.
     assert engine.status("chat1")["results"][0]["status"] == "done"
+
+
+# ── idempotent dispatch: no double-dispatch on rapid /away (issue #20) ──
+
+
+def test_inflight_dedup_skips_duplicate_dispatch(tmp_path, repos_file):
+    """A re-entered /away must not spawn a second worker for an in-flight issue."""
+    path = repos_file([{"repo": "owner/a"}])
+    entered = threading.Event()
+    gate = threading.Event()
+
+    def launch_loop(**kwargs):
+        entered.set()
+        gate.wait(timeout=5)  # hold the worker in flight
+        return {"status": "running"}
+
+    engine = make_engine(
+        tmp_path, gh_issues=[_issue(30)], repos_path=path, launch_loop=launch_loop, dry_run=True
+    )
+
+    first = engine.start("chat1", "default", "tok")
+    assert entered.wait(timeout=5)  # worker is mid-flight, holding the marker
+    first_workers = list(engine._workers)  # capture before the next start() resets it
+
+    # Re-enter /away while the first worker is still running.
+    second = engine.start("chat1", "default", "tok")
+    assert second["queued"] == 0
+    assert second["skipped_inflight"] >= 1
+
+    gate.set()
+    for t in first_workers:
+        t.join(timeout=5)
+    assert first["queued"] == 1
+
+
+def test_inflight_marker_cleared_allows_redispatch(tmp_path, repos_file):
+    """Once a worker finishes, its marker clears so the issue can dispatch again."""
+    path = repos_file([{"repo": "owner/a"}])
+    engine = make_engine(tmp_path, gh_issues=[_issue(31)], repos_path=path, dry_run=True)
+
+    first = engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)  # worker finishes → finally clears the marker
+    assert first["queued"] == 1
+
+    # A later /away re-dispatches the same issue (self-healing dedup).
+    second = engine.start("chat1", "default", "tok")
+    engine._join_workers(timeout=5)
+    assert second["queued"] == 1
+    assert second["skipped_inflight"] == 0
