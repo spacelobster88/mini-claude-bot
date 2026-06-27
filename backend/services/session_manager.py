@@ -258,6 +258,11 @@ class SessionManager:
     def __init__(self):
         self._sessions: dict[str, GatewaySession] = {}
         self._bg_tasks: dict[str, dict] = {}
+        # Last parsed HARNESS_BATCH_DONE marker per bg_key (issue #22). bg_key is
+        # stable across chain depths, so a depth-N marker stays available while
+        # depth-N+1 is mid-run and its tasks.json can't be resolved on disk. Used
+        # as a /status fallback so we render real progress instead of "Initializing".
+        self._harness_marker_cache: dict[str, dict] = {}
         self._global_lock = threading.Lock()
         self._running = False
         self._cleanup_thread: threading.Thread | None = None
@@ -1323,6 +1328,12 @@ class SessionManager:
 
         bg_key = self._bg_task_key(bot_id, chat_id, project_id)
 
+        # Fresh top-level dispatch (chains use chain_depth+1): drop any stale
+        # marker cached from a previous loop on this bg_key so /status doesn't
+        # show the prior run's progress before this run emits its first marker.
+        if chain_depth == 0:
+            self._harness_marker_cache.pop(bg_key, None)
+
         # Check if a background task is already running for this project
         with self._global_lock:
             existing = self._bg_tasks.get(bg_key)
@@ -1393,6 +1404,20 @@ class SessionManager:
 
                 # Check for harness batch-chaining markers
                 marker = self._parse_harness_marker(result)
+
+                # Cache the batch marker keyed by bg_key (stable across chain
+                # depths) so /status can fall back to it when the project's
+                # tasks.json can't be resolved on disk (issue #22). A 'complete'
+                # marker clears the cache so a finished loop stops reporting.
+                if marker and marker.get("type") == "batch_done":
+                    self._harness_marker_cache[bg_key] = {
+                        "phase": marker["phase"],
+                        "done": marker["done"],
+                        "total": marker["total"],
+                        "chain_depth": chain_depth,
+                    }
+                elif marker and marker.get("type") == "complete":
+                    self._harness_marker_cache.pop(bg_key, None)
 
                 # Detect project directory from Claude's response and save pointer
                 # Look for paths like /Users/.../Projects/foo/.harness/tasks.json
@@ -1859,6 +1884,29 @@ class SessionManager:
             logger.warning("Failed to read harness tasks.json from %s: %s", cwd, e)
             return None
 
+    @staticmethod
+    def _harness_from_marker(marker: dict) -> dict:
+        """Build a /status harness dict from a cached HARNESS_BATCH_DONE marker.
+
+        Used as a fallback when tasks.json can't be resolved on disk (issue #22).
+        The marker only carries phase/done/total, so per-status and per-phase
+        breakdowns are left empty; 'source' tags it as marker-derived (not a live
+        file read) for any consumer that wants to distinguish the two.
+        """
+        done = marker.get("done", 0)
+        total = marker.get("total", 0)
+        return {
+            "project_name": "unknown",
+            "current_phase": marker.get("phase", "unknown"),
+            "total": total,
+            "done": done,
+            "in_progress": 0,
+            "blocked": 0,
+            "pending": max(0, total - done),
+            "phases": {},
+            "source": "marker",
+        }
+
     def get_all_harness_status(self, chat_id: str, bot_id: str = "default") -> list[dict]:
         """Return structured harness progress for ALL background tasks for this chat_id."""
         tasks = self._find_bg_tasks_for_chat(bot_id, chat_id)
@@ -1888,6 +1936,13 @@ class SessionManager:
             cwd = task.get("cwd")
 
             harness = self._read_harness_progress(cwd) if cwd else None
+            if harness is None:
+                # tasks.json unresolvable (e.g. project lives outside the session
+                # cwd and the path-scrape missed) — fall back to the last batch
+                # marker so /status shows real progress, not "Initializing" (#22).
+                cached = self._harness_marker_cache.get(bg_key)
+                if cached:
+                    harness = self._harness_from_marker(cached)
 
             jobs.append({
                 "bg_status": bg_status,

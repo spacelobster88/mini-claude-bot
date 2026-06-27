@@ -632,6 +632,50 @@ def test_get_background_status_merges_harness_progress(manager, tmp_session_dir)
         alive.join()
 
 
+def test_get_all_harness_status_falls_back_to_marker(manager, tmp_session_dir):
+    """When tasks.json can't be resolved, /status falls back to the cached
+    HARNESS_BATCH_DONE marker instead of returning harness=None (issue #22)."""
+    import threading
+    # cwd has no .harness/tasks.json — resolution will return None.
+    cwd = str(tmp_session_dir / "default" / "nofile")
+    ev = threading.Event()
+    alive = threading.Thread(target=ev.wait)
+    alive.start()
+    try:
+        bg_key = _fake_bg_task(manager, "chatM", "proj", thread=alive, cwd=cwd)
+        # Sanity: with no cached marker, harness is None.
+        jobs = manager.get_all_harness_status("chatM")
+        assert jobs and jobs[0]["harness"] is None
+        # Seed the marker cache as the live loop would on a batch_done.
+        manager._harness_marker_cache[bg_key] = {
+            "phase": "architecture", "done": 3, "total": 10, "chain_depth": 1,
+        }
+        jobs = manager.get_all_harness_status("chatM")
+        assert jobs
+        harness = jobs[0]["harness"]
+        assert harness is not None, "marker fallback should populate harness"
+        assert harness["current_phase"] == "architecture"
+        assert harness["done"] == 3
+        assert harness["total"] == 10
+        assert harness["pending"] == 7
+        assert harness["source"] == "marker"
+    finally:
+        ev.set()
+        alive.join()
+
+
+def test_send_background_clears_stale_marker_on_fresh_dispatch(manager):
+    """A new top-level dispatch (chain_depth=0) drops a previous loop's marker
+    so /status doesn't show stale progress before the new run emits one (#22)."""
+    bg_key = manager._bg_task_key("default", "chatN", "proj")
+    manager._harness_marker_cache[bg_key] = {
+        "phase": "old", "done": 9, "total": 9, "chain_depth": 0,
+    }
+    with patch.object(manager, "send", side_effect=RuntimeError("stop")):
+        manager.send_background("chatN", "new loop", bot_token="", project_id="proj")
+    assert bg_key not in manager._harness_marker_cache
+
+
 def test_send_background_always_reaches_terminal_status(manager):
     """_run() wraps work in try/finally so status is never left at 'running' (Fix A1)."""
     with patch.object(manager, "send", side_effect=RuntimeError("boom")):
